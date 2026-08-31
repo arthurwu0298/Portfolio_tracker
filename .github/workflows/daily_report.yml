@@ -2,9 +2,8 @@ name: Daily Portfolio Tracker
 
 on:
   schedule:
-    # 台灣時間 17:30 (UTC 09:30)，週一到週五執行
     - cron: '30 9 * * 1-5'
-  workflow_dispatch: # 允許手動觸發
+  workflow_dispatch:
 
 jobs:
   build:
@@ -34,6 +33,7 @@ jobs:
       env:
         GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
         GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
       run: python portfolio_tracker.py
 
     - name: Commit SQLite DB changes
@@ -41,5 +41,4 @@ jobs:
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         git add portfolio_history.db history_chart.png
-        # 若資料庫與圖表有更新則 commit 回 repo
         git diff --quiet && git diff --staged --quiet || (git commit -m "chore: auto-update portfolio history [skip ci]" && git push)
