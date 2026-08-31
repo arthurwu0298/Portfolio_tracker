@@ -185,7 +185,7 @@ class TaiwanMarketTracker:
             INSERT OR REPLACE INTO history 
             (date, total_cost, total_mkt, total_net_worth, cash_reserve, unrealized_pl, return_rate)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''')
+        ''', (today, tc, tm, tnw, cash, pl, ret))  # 👈 修正這裡：補上要寫入的 7 個變數
         conn.commit()
         conn.close()
 
