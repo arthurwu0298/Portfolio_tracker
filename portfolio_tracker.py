@@ -6,7 +6,12 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime
-from portfolio_config import PORTFOLIO, CASH_RESERVE, LINE_NOTIFY_TOKEN
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
+
+from portfolio_config import PORTFOLIO, CASH_RESERVE, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
 
 DB_FILE = "portfolio_history.db"
 CHART_FILE = "history_chart.png"
@@ -22,7 +27,6 @@ class TaiwanMarketTracker:
         self.init_db()
 
     def init_db(self):
-        '''初始化 SQLite 資料庫'''
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('''
@@ -40,7 +44,6 @@ class TaiwanMarketTracker:
         conn.close()
 
     def fetch_market_data(self):
-        '''抓取上市與上櫃股價與官方殖利率'''
         # 上市
         res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
         if res1.status_code == 200:
@@ -68,18 +71,15 @@ class TaiwanMarketTracker:
                 except: pass
 
     def get_etf_real_yield(self, code, current_price):
-        '''使用 yfinance 取得 ETF 近12個月真實配息殖利率'''
         try:
             ticker = yf.Ticker(f"{code}.TW")
             hist = ticker.dividends
             if not hist.empty:
-                # 取近一年配息加總
                 one_yr_ago = pd.Timestamp.now(tz='UTC') - pd.DateOffset(years=1)
                 recent_div = hist[hist.index >= one_yr_ago].sum()
                 if current_price > 0:
                     return round((recent_div / current_price) * 100, 2)
-        except Exception as e:
-            print(f"yfinance 抓取 {code} 失敗: {e}")
+        except: pass
         return 0.0
 
     def calculate(self):
@@ -88,16 +88,10 @@ class TaiwanMarketTracker:
         total_mkt, total_cost = 0, 0
 
         for item in PORTFOLIO:
-            c = item["code"]
-            m = item["market"]
-            cp = item["cost_per_share"]
-            s = item["shares"]
-            
-            # 取得股價
+            c, m, cp, s = item["code"], item["market"], item["cost_per_share"], item["shares"]
             price = self.twse_prices.get(c) if m == "TWSE" else self.tpex_prices.get(c)
             price = price or cp 
             
-            # 取得殖利率 (ETF 改用 yfinance 真實配息紀錄)
             if "00" in c:
                 dyield = self.get_etf_real_yield(c, price)
             else:
@@ -141,14 +135,12 @@ class TaiwanMarketTracker:
         conn.close()
 
     def plot_history(self):
-        '''讀取 SQLite 歷史數據繪製淨值走勢圖'''
         conn = sqlite3.connect(DB_FILE)
         df_hist = pd.read_sql("SELECT date, total_net_worth FROM history ORDER BY date", conn)
         conn.close()
         
         if len(df_hist) < 1: return
         
-        # 繪圖參數設定 (支援中文)
         plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'Taipei Sans TC Beta', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
 
@@ -162,43 +154,93 @@ class TaiwanMarketTracker:
         plt.savefig(CHART_FILE)
         plt.close()
 
-    def send_line_notify(self, msg):
-        if not LINE_NOTIFY_TOKEN:
-            print("未設定 LINE_NOTIFY_TOKEN，跳過推播。")
+    def send_email_notify(self, df, tm, tnw, pl, ret, today_str):
+        if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+            print("未設定 GMAIL_ADDRESS 或 GMAIL_APP_PASSWORD，跳過 Email 推播。")
             return
-        headers = {"Authorization": f"Bearer {LINE_NOTIFY_TOKEN}"}
-        payload = {"message": msg}
-        files = {}
-        if os.path.exists(CHART_FILE):
-            files = {"imageFile": open(CHART_FILE, "rb")}
+
+        msg = MIMEMultipart('related')
+        msg['Subject'] = f"📊 【投資組合每日報表】 {today_str}"
+        msg['From'] = GMAIL_ADDRESS
+        msg['To'] = GMAIL_ADDRESS # 寄給自己
+
+        pl_color = "#28a745" if pl >= 0 else "#dc3545"
         
-        res = requests.post("https://notify-api.line.me/api/notify", headers=headers, data=payload, files=files)
-        if res.status_code == 200:
-            print("LINE Notify 推播成功！")
-        else:
-            print(f"LINE Notify 推播失敗：{res.status_code}, {res.text}")
+        html = f'''
+        <html>
+        <head>
+          <style>
+            body {{ font-family: Arial, sans-serif; color: #333; }}
+            .summary {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; max-width: 600px; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #f2f2f2; }}
+            .positive {{ color: #28a745; font-weight: bold; }}
+            .negative {{ color: #dc3545; font-weight: bold; }}
+          </style>
+        </head>
+        <body>
+          <h2>📈 投資組合總覽 ({today_str})</h2>
+          <div class="summary">
+            <p>股票總市值: <b>NT$ {tm:,.0f}</b></p>
+            <p>預備現金: <b>NT$ {CASH_RESERVE:,.0f}</b></p>
+            <p>總淨值: <b>NT$ {tnw:,.0f}</b></p>
+            <p>未實現損益: <span style="color: {pl_color}; font-weight: bold;">NT$ {pl:,.0f} ({ret:+.2f}%)</span></p>
+          </div>
+          <h3>📝 個股明細</h3>
+          <table>
+            <tr>
+              <th>標的</th>
+              <th>現價</th>
+              <th>損益</th>
+              <th>殖利率</th>
+            </tr>
+        '''
+        
+        for _, row in df.iterrows():
+            pl_class = "positive" if row['損益'] > 0 else ("negative" if row['損益'] < 0 else "")
+            html += f'''
+            <tr>
+              <td>{row['名稱']} ({row['代碼']})</td>
+              <td>{row['現價']}</td>
+              <td class="{pl_class}">${row['損益']:,.0f}</td>
+              <td>{row['殖利率(%)']}%</td>
+            </tr>
+            '''
+            
+        html += '''
+          </table>
+          <h3>📊 資產走勢</h3>
+          <img src="cid:history_chart" alt="資產走勢圖" style="max-width: 100%; height: auto;">
+        </body>
+        </html>
+        '''
+
+        msg_alternative = MIMEMultipart('alternative')
+        msg.attach(msg_alternative)
+        msg_alternative.attach(MIMEText(html, 'html'))
+
+        # 附加圖片並給定 Content-ID 以便在 HTML 中內嵌顯示
+        if os.path.exists(CHART_FILE):
+            with open(CHART_FILE, 'rb') as f:
+                img = MIMEImage(f.read())
+                img.add_header('Content-ID', '<history_chart>')
+                msg.attach(img)
+
+        try:
+            # 透過 SMTP SSL 連線寄信
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+                server.send_message(msg)
+            print("Email 推播成功！")
+        except Exception as e:
+            print(f"Email 推播失敗: {e}")
 
     def run(self):
         df, tc, tm, tnw, pl, ret = self.calculate()
         today_str = datetime.now().strftime("%Y-%m-%d")
-        
-        # 格式化 LINE 訊息
-        msg = f"\n📊 【投資組合每日報表】 {today_str}\n"
-        msg += f"====================\n"
-        msg += f"📈 股票總市值: NT$ {tm:,.0f}\n"
-        msg += f"💵 預備現金: NT$ {CASH_RESERVE:,.0f}\n"
-        msg += f"💎 總淨值: NT$ {tnw:,.0f}\n"
-        msg += f"🎯 未實現損益: NT$ {pl:,.0f} ({ret:+.2f}%)\n"
-        msg += f"====================\n"
-        
-        for _, row in df.iterrows():
-            sign = "🔴" if row['損益'] > 0 else ("🟢" if row['損益'] < 0 else "⚪")
-            msg += f"{row['名稱']}({row['代碼']}) | 價: {row['現價']}\n"
-            msg += f"益: {sign} ${row['損益']:,.0f} | 息: {row['殖利率(%)']}%\n"
-            msg += "-"*15 + "\n"
-            
-        print(msg)
-        self.send_line_notify(msg)
+        print(f"正在處理 {today_str} 的資料...")
+        self.send_email_notify(df, tm, tnw, pl, ret, today_str)
 
 if __name__ == "__main__":
     tracker = TaiwanMarketTracker()

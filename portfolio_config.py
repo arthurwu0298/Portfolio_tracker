@@ -14,5 +14,6 @@ PORTFOLIO = [
 
 CASH_RESERVE = 50000
 
-# LINE Notify Token (由 GitHub Actions 的 Secrets 提供)
-LINE_NOTIFY_TOKEN = os.getenv("LINE_NOTIFY_TOKEN", "")
+# Gmail 設定 (由 GitHub Actions 的 Secrets 提供)
+GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
