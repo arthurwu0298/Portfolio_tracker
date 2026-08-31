@@ -1,14 +1,6 @@
 # portfolio_config.py
 import os
 
-# 優化版 50萬 配置 (核心成長 + 金融防禦 + 指數/高息)
-# valuation_method: 
-#   'yield' (殖利率法)
-#   'pe' (本益比法)
-#   'pb' (淨值比法)
-#   'etf_yield' (目標殖利率，針對 ETF 專用)
-#   'manual' (手動設定)
-
 PORTFOLIO = [
     {"code": "2480", "name": "敦陽科", "market": "TWSE", "shares": 650, "cost_per_share": 153.8, "valuation_method": "yield", "target_yields": {"cheap": 6.0, "fair": 5.0, "target": 4.0}},
     {"code": "3130", "name": "一零四", "market": "TWSE", "shares": 350, "cost_per_share": 200.0, "valuation_method": "pe"},
@@ -21,7 +13,6 @@ PORTFOLIO = [
 
 CASH_RESERVE = 50000
 
-# 憑證設定 (由 GitHub Actions 的 Secrets 提供)
 GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
-FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") # FinMind API Token
+FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")

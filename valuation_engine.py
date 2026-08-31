@@ -28,6 +28,17 @@ class FinMindValuationEngine:
             print(f"FinMind API 請求失敗 ({data_id}): {e}")
         return pd.DataFrame()
 
+    def get_recent_dividend(self, stock_id):
+        '''抓取近一年總配息金額'''
+        df = self._fetch_data("TaiwanStockDividendResult", stock_id, years_back=2)
+        if df.empty or "stock_and_cache_dividend" not in df.columns: return 0.0
+        try:
+            df['date'] = pd.to_datetime(df['date'])
+            one_yr_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
+            return df[df['date'] >= one_yr_ago]["stock_and_cache_dividend"].sum()
+        except:
+            return 0.0
+
     def calc_yield_valuation(self, stock_id, target_yields):
         df = self._fetch_data("TaiwanStockDividendResult", stock_id, years_back=5)
         if df.empty or "stock_and_cache_dividend" not in df.columns:
