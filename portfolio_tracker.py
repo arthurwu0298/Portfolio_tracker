@@ -44,7 +44,6 @@ class TaiwanMarketTracker:
         conn.close()
 
     def fetch_market_data(self):
-        # 上市
         res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
         if res1.status_code == 200:
             for item in res1.json():
@@ -57,7 +56,6 @@ class TaiwanMarketTracker:
                 try: self.twse_yields[item["Code"]] = float(item["DividendYield"].replace(",", ""))
                 except: pass
 
-        # 上櫃
         res3 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
         if res3.status_code == 200:
             for item in res3.json():
@@ -105,11 +103,27 @@ class TaiwanMarketTracker:
             total_cost += cost
             total_mkt += mkt
             
+            # 狀態判定
+            cheap, fair, target = item.get("cheap", 0), item.get("fair", 0), item.get("target", 0)
+            status = "⚪ 觀望"
+            if price <= cheap and cheap > 0:
+                status = "🟢 便宜 (可加碼)"
+            elif cheap < price <= fair:
+                status = "🔵 合理 (續抱)"
+            elif fair < price < target:
+                status = "🟡 偏高 (留意)"
+            elif price >= target and target > 0:
+                status = "🔴 達標 (可停利)"
+            
             records.append({
                 "代碼": c, "名稱": item["name"],
                 "現價": price, "成本": cp, "股數": s,
                 "市值": mkt, "損益": pl,
-                "殖利率(%)": dyield
+                "殖利率(%)": dyield,
+                "便宜價": cheap,
+                "合理價": fair,
+                "目標價": target,
+                "狀態": status
             })
         
         df = pd.DataFrame(records)
@@ -141,7 +155,8 @@ class TaiwanMarketTracker:
         
         if len(df_hist) < 1: return
         
-        plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'Taipei Sans TC Beta', 'DejaVu Sans']
+        # 解決 GitHub Actions Ubuntu 亂碼問題：優先使用 Noto Sans CJK
+        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'Microsoft JhengHei', 'Taipei Sans TC Beta', 'sans-serif']
         plt.rcParams['axes.unicode_minus'] = False
 
         plt.figure(figsize=(10, 5))
@@ -162,7 +177,7 @@ class TaiwanMarketTracker:
         msg = MIMEMultipart('related')
         msg['Subject'] = f"📊 【投資組合每日報表】 {today_str}"
         msg['From'] = GMAIL_ADDRESS
-        msg['To'] = GMAIL_ADDRESS # 寄給自己
+        msg['To'] = GMAIL_ADDRESS
 
         pl_color = "#28a745" if pl >= 0 else "#dc3545"
         
@@ -172,11 +187,13 @@ class TaiwanMarketTracker:
           <style>
             body {{ font-family: Arial, sans-serif; color: #333; }}
             .summary {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
-            table {{ border-collapse: collapse; width: 100%; max-width: 600px; }}
-            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-            th {{ background-color: #f2f2f2; }}
+            table {{ border-collapse: collapse; width: 100%; max-width: 800px; font-size: 14px; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: center; }}
+            th {{ background-color: #f2f2f2; white-space: nowrap; }}
+            .text-left {{ text-align: left; }}
             .positive {{ color: #28a745; font-weight: bold; }}
             .negative {{ color: #dc3545; font-weight: bold; }}
+            .status-col {{ font-size: 13px; }}
           </style>
         </head>
         <body>
@@ -187,31 +204,47 @@ class TaiwanMarketTracker:
             <p>總淨值: <b>NT$ {tnw:,.0f}</b></p>
             <p>未實現損益: <span style="color: {pl_color}; font-weight: bold;">NT$ {pl:,.0f} ({ret:+.2f}%)</span></p>
           </div>
-          <h3>📝 個股明細</h3>
+          
+          <h3>📝 個股明細與估值</h3>
           <table>
             <tr>
-              <th>標的</th>
+              <th class="text-left">標的</th>
               <th>現價</th>
-              <th>損益</th>
-              <th>殖利率</th>
+              <th>成本價</th>
+              <th>未實現損益</th>
+              <th>便宜價</th>
+              <th>合理價</th>
+              <th>目標價</th>
+              <th>操作建議</th>
             </tr>
         '''
         
         for _, row in df.iterrows():
             pl_class = "positive" if row['損益'] > 0 else ("negative" if row['損益'] < 0 else "")
+            
+            # 格式化顯示 (若未設定則顯示 '-')
+            cheap_str = f"{row['便宜價']}" if row['便宜價'] > 0 else "-"
+            fair_str = f"{row['合理價']}" if row['合理價'] > 0 else "-"
+            target_str = f"{row['目標價']}" if row['目標價'] > 0 else "-"
+            
             html += f'''
             <tr>
-              <td>{row['名稱']} ({row['代碼']})</td>
-              <td>{row['現價']}</td>
+              <td class="text-left">{row['名稱']}<br><span style="font-size: 12px; color: #666;">({row['代碼']})</span></td>
+              <td><b>{row['現價']}</b></td>
+              <td>{row['成本']}</td>
               <td class="{pl_class}">${row['損益']:,.0f}</td>
-              <td>{row['殖利率(%)']}%</td>
+              <td style="color: #28a745;">{cheap_str}</td>
+              <td style="color: #0056b3;">{fair_str}</td>
+              <td style="color: #dc3545;">{target_str}</td>
+              <td class="status-col">{row['狀態']}</td>
             </tr>
             '''
             
         html += '''
           </table>
+          <br>
           <h3>📊 資產走勢</h3>
-          <img src="cid:history_chart" alt="資產走勢圖" style="max-width: 100%; height: auto;">
+          <img src="cid:history_chart" alt="資產走勢圖" style="max-width: 100%; height: auto; border: 1px solid #eee;">
         </body>
         </html>
         '''
@@ -220,7 +253,6 @@ class TaiwanMarketTracker:
         msg.attach(msg_alternative)
         msg_alternative.attach(MIMEText(html, 'html'))
 
-        # 附加圖片並給定 Content-ID 以便在 HTML 中內嵌顯示
         if os.path.exists(CHART_FILE):
             with open(CHART_FILE, 'rb') as f:
                 img = MIMEImage(f.read())
@@ -228,7 +260,6 @@ class TaiwanMarketTracker:
                 msg.attach(img)
 
         try:
-            # 透過 SMTP SSL 連線寄信
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
                 server.send_message(msg)
