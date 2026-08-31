@@ -11,7 +11,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 
-from portfolio_config import PORTFOLIO, CASH_RESERVE, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+from portfolio_config import PORTFOLIO, CASH_RESERVE, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, FINMIND_TOKEN
+from valuation_engine import FinMindValuationEngine
 
 DB_FILE = "portfolio_history.db"
 CHART_FILE = "history_chart.png"
@@ -20,10 +21,9 @@ class TaiwanMarketTracker:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
-        self.twse_prices = {}
-        self.tpex_prices = {}
-        self.twse_yields = {}
-        self.tpex_yields = {}
+        self.twse_prices, self.tpex_prices = {}, {}
+        self.twse_metrics, self.tpex_metrics = {}, {}
+        self.valuation_engine = FinMindValuationEngine(token=FINMIND_TOKEN)
         self.init_db()
 
     def init_db(self):
@@ -31,19 +31,16 @@ class TaiwanMarketTracker:
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS history (
-                date TEXT PRIMARY KEY,
-                total_cost REAL,
-                total_mkt REAL,
-                total_net_worth REAL,
-                cash_reserve REAL,
-                unrealized_pl REAL,
-                return_rate REAL
+                date TEXT PRIMARY KEY, total_cost REAL, total_mkt REAL,
+                total_net_worth REAL, cash_reserve REAL, unrealized_pl REAL, return_rate REAL
             )
         ''')
         conn.commit()
         conn.close()
 
     def fetch_market_data(self):
+        print("📥 抓取 TWSE / TPEx 最新報價與本益比/淨值比資料...")
+        # TWSE
         res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
         if res1.status_code == 200:
             for item in res1.json():
@@ -53,9 +50,15 @@ class TaiwanMarketTracker:
         res2 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_d", timeout=10)
         if res2.status_code == 200:
             for item in res2.json():
-                try: self.twse_yields[item["Code"]] = float(item["DividendYield"].replace(",", ""))
+                try:
+                    self.twse_metrics[item["Code"]] = {
+                        "yield": float(item["DividendYield"].replace(",", "")),
+                        "pe": float(item["PEratio"].replace(",", "")),
+                        "pb": float(item["PBratio"].replace(",", ""))
+                    }
                 except: pass
 
+        # TPEx
         res3 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
         if res3.status_code == 200:
             for item in res3.json():
@@ -65,7 +68,12 @@ class TaiwanMarketTracker:
         res4 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis", timeout=10)
         if res4.status_code == 200:
             for item in res4.json():
-                try: self.tpex_yields[item["SecuritiesCompanyCode"]] = float(item["YieldRatio"].replace(",", ""))
+                try:
+                    self.tpex_metrics[item["SecuritiesCompanyCode"]] = {
+                        "yield": float(item["YieldRatio"].replace(",", "")),
+                        "pe": float(item["PERatio"].replace(",", "")),
+                        "pb": float(item["PBRatio"].replace(",", ""))
+                    }
                 except: pass
 
     def get_etf_real_yield(self, code, current_price):
@@ -90,11 +98,31 @@ class TaiwanMarketTracker:
             price = self.twse_prices.get(c) if m == "TWSE" else self.tpex_prices.get(c)
             price = price or cp 
             
+            # 取得本益比、淨值比、殖利率
+            metrics = self.twse_metrics.get(c, {}) if m == "TWSE" else self.tpex_metrics.get(c, {})
+            current_pe = metrics.get("pe", 0.0)
+            current_pb = metrics.get("pb", 0.0)
+            
             if "00" in c:
                 dyield = self.get_etf_real_yield(c, price)
             else:
-                dyield = self.twse_yields.get(c) if m == "TWSE" else self.tpex_yields.get(c)
-                dyield = dyield or 0.0
+                dyield = metrics.get("yield", 0.0)
+            
+            # 💡 呼叫 FinMind 估值引擎
+            v_method = item.get("valuation_method", "manual")
+            cheap, fair, target = 0, 0, 0
+            
+            if v_method == "manual":
+                cheap, fair, target = item.get("cheap",0), item.get("fair",0), item.get("target",0)
+            elif v_method == "yield":
+                print(f"🔄 正在透過 FinMind 計算 {item['name']} 歷史殖利率區間...")
+                cheap, fair, target = self.valuation_engine.calc_yield_valuation(c, item.get("target_yields", {}))
+            elif v_method == "pe":
+                print(f"🔄 正在透過 FinMind 計算 {item['name']} 歷史本益比(PE)區間...")
+                cheap, fair, target = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
+            elif v_method == "pb":
+                print(f"🔄 正在透過 FinMind 計算 {item['name']} 歷史淨值比(PB)區間...")
+                cheap, fair, target = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
             
             cost = s * cp
             mkt = s * price
@@ -103,27 +131,18 @@ class TaiwanMarketTracker:
             total_cost += cost
             total_mkt += mkt
             
-            # 狀態判定
-            cheap, fair, target = item.get("cheap", 0), item.get("fair", 0), item.get("target", 0)
             status = "⚪ 觀望"
-            if price <= cheap and cheap > 0:
-                status = "🟢 便宜 (可加碼)"
-            elif cheap < price <= fair:
-                status = "🔵 合理 (續抱)"
-            elif fair < price < target:
-                status = "🟡 偏高 (留意)"
-            elif price >= target and target > 0:
-                status = "🔴 達標 (可停利)"
+            if price <= cheap and cheap > 0: status = "🟢 便宜 (加碼)"
+            elif cheap < price <= fair: status = "🔵 合理 (續抱)"
+            elif fair < price < target: status = "🟡 偏高 (留意)"
+            elif price >= target and target > 0: status = "🔴 達標 (停利)"
             
             records.append({
                 "代碼": c, "名稱": item["name"],
                 "現價": price, "成本": cp, "股數": s,
-                "市值": mkt, "損益": pl,
-                "殖利率(%)": dyield,
-                "便宜價": cheap,
-                "合理價": fair,
-                "目標價": target,
-                "狀態": status
+                "市值": mkt, "損益": pl, "殖利率(%)": dyield,
+                "便宜價": cheap, "合理價": fair, "目標價": target,
+                "狀態": status, "估值法": v_method.upper()
             })
         
         df = pd.DataFrame(records)
@@ -136,6 +155,7 @@ class TaiwanMarketTracker:
         
         return df, total_cost, total_mkt, total_net_worth, total_pl, ret_rate
 
+    # ...(保留原本的 save_to_db, plot_history 與 send_email_notify 邏輯，並在信件表格新增「估值法」欄位)...
     def save_to_db(self, tc, tm, tnw, cash, pl, ret):
         today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect(DB_FILE)
@@ -152,113 +172,67 @@ class TaiwanMarketTracker:
         conn = sqlite3.connect(DB_FILE)
         df_hist = pd.read_sql("SELECT date, total_net_worth FROM history ORDER BY date", conn)
         conn.close()
-        
         if len(df_hist) < 1: return
-        
-        # 解決 GitHub Actions Ubuntu 亂碼問題：優先使用 Noto Sans CJK
-        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'Microsoft JhengHei', 'Taipei Sans TC Beta', 'sans-serif']
+        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'Microsoft JhengHei', 'sans-serif']
         plt.rcParams['axes.unicode_minus'] = False
-
         plt.figure(figsize=(10, 5))
         plt.plot(pd.to_datetime(df_hist['date']), df_hist['total_net_worth'], marker='o', color='#1f77b4', linewidth=2)
         plt.title('投資組合總淨值走勢圖 (含現金)', fontsize=14, fontweight='bold')
-        plt.xlabel('日期', fontsize=12)
-        plt.ylabel('總淨值 (NT$)', fontsize=12)
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
         plt.savefig(CHART_FILE)
         plt.close()
 
     def send_email_notify(self, df, tm, tnw, pl, ret, today_str):
-        if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-            print("未設定 GMAIL_ADDRESS 或 GMAIL_APP_PASSWORD，跳過 Email 推播。")
-            return
-
+        if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return
         msg = MIMEMultipart('related')
         msg['Subject'] = f"📊 【投資組合每日報表】 {today_str}"
-        msg['From'] = GMAIL_ADDRESS
-        msg['To'] = GMAIL_ADDRESS
-
+        msg['From'], msg['To'] = GMAIL_ADDRESS, GMAIL_ADDRESS
         pl_color = "#28a745" if pl >= 0 else "#dc3545"
         
         html = f'''
-        <html>
-        <head>
-          <style>
+        <html><head><style>
             body {{ font-family: Arial, sans-serif; color: #333; }}
             .summary {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
-            table {{ border-collapse: collapse; width: 100%; max-width: 800px; font-size: 14px; }}
+            table {{ border-collapse: collapse; width: 100%; max-width: 850px; font-size: 13px; }}
             th, td {{ border: 1px solid #ddd; padding: 8px; text-align: center; }}
             th {{ background-color: #f2f2f2; white-space: nowrap; }}
             .text-left {{ text-align: left; }}
             .positive {{ color: #28a745; font-weight: bold; }}
             .negative {{ color: #dc3545; font-weight: bold; }}
-            .status-col {{ font-size: 13px; }}
-          </style>
-        </head>
-        <body>
+        </style></head><body>
           <h2>📈 投資組合總覽 ({today_str})</h2>
           <div class="summary">
-            <p>股票總市值: <b>NT$ {tm:,.0f}</b></p>
-            <p>預備現金: <b>NT$ {CASH_RESERVE:,.0f}</b></p>
-            <p>總淨值: <b>NT$ {tnw:,.0f}</b></p>
-            <p>未實現損益: <span style="color: {pl_color}; font-weight: bold;">NT$ {pl:,.0f} ({ret:+.2f}%)</span></p>
+            <p>總淨值: <b>NT$ {tnw:,.0f}</b> | 未實現損益: <span style="color: {pl_color}; font-weight: bold;">NT$ {pl:,.0f} ({ret:+.2f}%)</span></p>
           </div>
-          
-          <h3>📝 個股明細與估值</h3>
+          <h3>📝 個股明細與法人動態估值</h3>
           <table>
-            <tr>
-              <th class="text-left">標的</th>
-              <th>現價</th>
-              <th>成本價</th>
-              <th>未實現損益</th>
-              <th>便宜價</th>
-              <th>合理價</th>
-              <th>目標價</th>
-              <th>操作建議</th>
-            </tr>
+            <tr><th class="text-left">標的</th><th>現價</th><th>未實現損益</th><th>估值法</th><th>便宜價</th><th>合理價</th><th>目標價</th><th>狀態</th></tr>
         '''
-        
         for _, row in df.iterrows():
             pl_class = "positive" if row['損益'] > 0 else ("negative" if row['損益'] < 0 else "")
+            c_str = f"{row['便宜價']}" if row['便宜價'] > 0 else "-"
+            f_str = f"{row['合理價']}" if row['合理價'] > 0 else "-"
+            t_str = f"{row['目標價']}" if row['目標價'] > 0 else "-"
             
-            # 格式化顯示 (若未設定則顯示 '-')
-            cheap_str = f"{row['便宜價']}" if row['便宜價'] > 0 else "-"
-            fair_str = f"{row['合理價']}" if row['合理價'] > 0 else "-"
-            target_str = f"{row['目標價']}" if row['目標價'] > 0 else "-"
+            html += f'''<tr>
+              <td class="text-left">{row['名稱']}<br><span style="font-size: 11px; color: #666;">({row['代碼']})</span></td>
+              <td><b>{row['現價']}</b></td><td class="{pl_class}">${row['損益']:,.0f}</td>
+              <td style="color: #666;">{row['估值法']}</td>
+              <td style="color: #28a745;">{c_str}</td><td style="color: #0056b3;">{f_str}</td><td style="color: #dc3545;">{t_str}</td>
+              <td>{row['狀態']}</td>
+            </tr>'''
             
-            html += f'''
-            <tr>
-              <td class="text-left">{row['名稱']}<br><span style="font-size: 12px; color: #666;">({row['代碼']})</span></td>
-              <td><b>{row['現價']}</b></td>
-              <td>{row['成本']}</td>
-              <td class="{pl_class}">${row['損益']:,.0f}</td>
-              <td style="color: #28a745;">{cheap_str}</td>
-              <td style="color: #0056b3;">{fair_str}</td>
-              <td style="color: #dc3545;">{target_str}</td>
-              <td class="status-col">{row['狀態']}</td>
-            </tr>
-            '''
-            
-        html += '''
-          </table>
-          <br>
-          <h3>📊 資產走勢</h3>
-          <img src="cid:history_chart" alt="資產走勢圖" style="max-width: 100%; height: auto; border: 1px solid #eee;">
-        </body>
-        </html>
-        '''
+        html += '''</table><br><img src="cid:history_chart" style="max-width: 100%; border: 1px solid #eee;"></body></html>'''
 
         msg_alternative = MIMEMultipart('alternative')
         msg.attach(msg_alternative)
         msg_alternative.attach(MIMEText(html, 'html'))
-
         if os.path.exists(CHART_FILE):
             with open(CHART_FILE, 'rb') as f:
                 img = MIMEImage(f.read())
                 img.add_header('Content-ID', '<history_chart>')
                 msg.attach(img)
-
         try:
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
