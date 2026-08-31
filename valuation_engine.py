@@ -29,7 +29,6 @@ class FinMindValuationEngine:
         return pd.DataFrame()
 
     def get_recent_dividend(self, stock_id):
-        '''抓取近一年總配息金額'''
         df = self._fetch_data("TaiwanStockDividendResult", stock_id, years_back=2)
         if df.empty or "stock_and_cache_dividend" not in df.columns: return 0.0
         try:

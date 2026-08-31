@@ -3,6 +3,7 @@ import os
 import sqlite3
 import requests
 import pandas as pd
+import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime
 import smtplib
@@ -52,11 +53,13 @@ class TaiwanMarketTracker:
 
     def fetch_market_data(self):
         print("📥 抓取 TWSE / TPEx 最新報價、本益比與 ETF 淨值資料...")
-        res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        
+        # 1. 抓取上市
+        res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=15)
         if res1.status_code == 200:
             for item in res1.json(): self.twse_prices[item["Code"]] = safe_float(item.get("ClosingPrice"))
         
-        res2 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_d", timeout=10)
+        res2 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_d", timeout=15)
         if res2.status_code == 200:
             for item in res2.json():
                 self.twse_metrics[item["Code"]] = {
@@ -65,29 +68,63 @@ class TaiwanMarketTracker:
                     "pb": safe_float(item.get("PBratio"))
                 }
 
-        res3 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
-        if res3.status_code == 200:
-            for item in res3.json(): self.tpex_prices[item["SecuritiesCompanyCode"]] = safe_float(item.get("Close"))
-                
-        res4 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis", timeout=10)
-        if res4.status_code == 200:
-            for item in res4.json():
-                lower_item = {k.lower(): v for k, v in item.items()}
-                sec_code = lower_item.get("securitiescompanycode")
-                if sec_code:
-                    self.tpex_metrics[sec_code] = {
-                        "yield": safe_float(lower_item.get("dividendyield")),
-                        "pe": safe_float(lower_item.get("peratio")),
-                        "pb": safe_float(lower_item.get("pbratio"))
-                    }
+        # 2. 抓取上櫃 (TPEx)
+        try:
+            res3 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=15)
+            if res3.status_code == 200:
+                for item in res3.json(): self.tpex_prices[item["SecuritiesCompanyCode"]] = safe_float(item.get("Close"))
+        except: pass
                 
         try:
-            res_etf = self.session.get("https://openapi.twse.com.tw/v1/opendata/t187ap46_L", timeout=10)
+            res4 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis", timeout=15)
+            if res4.status_code == 200:
+                for item in res4.json():
+                    lower_item = {k.lower(): v for k, v in item.items()}
+                    sec_code = lower_item.get("securitiescompanycode")
+                    if sec_code:
+                        self.tpex_metrics[sec_code] = {
+                            "yield": safe_float(lower_item.get("perdividendyield", lower_item.get("dividendyield"))),
+                            "pe": safe_float(lower_item.get("peratio")),
+                            "pb": safe_float(lower_item.get("pbratio"))
+                        }
+        except: pass
+
+        # 3. 抓取 ETF 淨值 (增加容錯，避免掛掉)
+        try:
+            res_etf = self.session.get("https://openapi.twse.com.tw/v1/opendata/t187ap46_L", timeout=15)
             if res_etf.status_code == 200:
                 for item in res_etf.json():
                     self.etf_navs[item.get("SecuritiesCompanyCode")] = safe_float(item.get("NetAssetValue"))
-        except:
-            print("⚠️ ETF 淨值資料抓取失敗，將略過。")
+        except: pass
+
+        # 4. YFinance 終極防呆機制 (針對被擋 IP 的狀況)
+        for item in PORTFOLIO:
+            c, m = item["code"], item["market"]
+            p = self.twse_prices.get(c) if m == "TWSE" else self.tpex_prices.get(c)
+            mets = self.twse_metrics.get(c) if m == "TWSE" else self.tpex_metrics.get(c)
+            
+            # 如果價格或 PE 抓不到，啟動 YFinance 補救
+            if not p or not mets or mets.get('pe', 0.0) == 0.0:
+                print(f"⚠️ {c} 官方 API 資料遺失，啟動 yfinance 備援抓取...")
+                try:
+                    yf_ticker = f"{c}.TW" if m == "TWSE" else f"{c}.TWO"
+                    info = yf.Ticker(yf_ticker).info
+                    
+                    if not p:
+                        fallback_p = safe_float(info.get("currentPrice", info.get("regularMarketPrice", 0.0)))
+                        if fallback_p > 0:
+                            if m == "TWSE": self.twse_prices[c] = fallback_p
+                            else: self.tpex_prices[c] = fallback_p
+                            
+                    if not mets or mets.get('pe', 0.0) == 0.0:
+                        pe = safe_float(info.get("trailingPE", 0.0))
+                        pb = safe_float(info.get("priceToBook", 0.0))
+                        dy = safe_float(info.get("dividendYield", 0.0))
+                        if dy > 0 and dy < 1: dy *= 100
+                        new_metrics = {"pe": pe, "pb": pb, "yield": dy}
+                        if m == "TWSE": self.twse_metrics[c] = new_metrics
+                        else: self.tpex_metrics[c] = new_metrics
+                except: pass
 
     def calculate(self):
         self.fetch_market_data()
@@ -122,9 +159,9 @@ class TaiwanMarketTracker:
                 y_c, y_f, y_t = ty.get('cheap', 0), ty.get('fair', 0), ty.get('target', 0)
                 
                 # 計算對應的目標價格 (近一年配息 / 目標殖利率)
-                p_c = round(recent_div / (y_c / 100), 1) if y_c > 0 and recent_div > 0 else 0
-                p_f = round(recent_div / (y_f / 100), 1) if y_f > 0 and recent_div > 0 else 0
-                p_t = round(recent_div / (y_t / 100), 1) if y_t > 0 and recent_div > 0 else 0
+                p_c = round(recent_div / (y_c / 100), 2) if y_c > 0 and recent_div > 0 else 0
+                p_f = round(recent_div / (y_f / 100), 2) if y_f > 0 and recent_div > 0 else 0
+                p_t = round(recent_div / (y_t / 100), 2) if y_t > 0 and recent_div > 0 else 0
                 
                 # 結合成 "價格 (殖利率%)" 的字串格式
                 cheap = f"{p_c} ({y_c}%)" if p_c > 0 else "-"
