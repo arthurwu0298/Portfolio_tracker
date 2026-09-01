@@ -11,7 +11,7 @@ PORTFOLIO = [
     {"code": "006208", "name": "富邦台50", "market": "TWSE", "shares": 100000, "cost_per_share": 100.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 4.0, "fair": 3.5, "target": 3.0}},
     {"code": "00878", "name": "國泰永續高股息", "market": "TWSE", "shares": 130000, "cost_per_share": 23.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 6.5, "fair": 5.5, "target": 4.5}},
     {"code": "00919", "name": "群益台灣精選高息", "market": "TWSE", "shares": 130000, "cost_per_share": 23.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 6.5, "fair": 5.5, "target": 4.5}},
-    {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 3200, "cost_per_share": 130.0, "valuation_method": "pe"}
+    {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 3200, "cost_per_share": 110.0, "valuation_method": "pe"},
     # --- 新增部位 (股數與成本預設為 0，請自行填入真實數據) ---
     {"code": "2408", "name": "南亞科", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "pb"},
     {"code": "2344", "name": "華邦電", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "pb"},
