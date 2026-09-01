@@ -2,13 +2,14 @@
 import os
 
 PORTFOLIO = [
-    {"code": "2480", "name": "敦陽科", "market": "TWSE", "shares": 650, "cost_per_share": 153.8, "valuation_method": "yield", "target_yields": {"cheap": 6.0, "fair": 5.0, "target": 4.0}},
-    {"code": "3130", "name": "一零四", "market": "TWSE", "shares": 350, "cost_per_share": 200.0, "valuation_method": "pe"},
-    {"code": "6146", "name": "耕興", "market": "TPEx", "shares": 300, "cost_per_share": 233.3, "valuation_method": "pe"},
-    {"code": "2886", "name": "兆豐金", "market": "TWSE", "shares": 1000, "cost_per_share": 40.0, "valuation_method": "pb"},
-    {"code": "2892", "name": "玉山金", "market": "TWSE", "shares": 1400, "cost_per_share": 28.5, "valuation_method": "pb"},
-    {"code": "006208", "name": "富邦台50", "market": "TWSE", "shares": 1000, "cost_per_share": 100.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 4.0, "fair": 3.5, "target": 3.0}},
-    {"code": "00878", "name": "國泰永續高股息", "market": "TWSE", "shares": 1300, "cost_per_share": 23.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 6.5, "fair": 5.5, "target": 4.5}},
+    {"code": "2480", "name": "敦陽科", "market": "TWSE", "shares": 65000, "cost_per_share": 153.8, "valuation_method": "yield", "target_yields": {"cheap": 6.0, "fair": 5.0, "target": 4.0}},
+    {"code": "3130", "name": "一零四", "market": "TWSE", "shares": 35000, "cost_per_share": 200.0, "valuation_method": "pe"},
+    {"code": "6146", "name": "耕興", "market": "TPEx", "shares": 30000, "cost_per_share": 233.3, "valuation_method": "pe"},
+    {"code": "2886", "name": "兆豐金", "market": "TWSE", "shares": 100000, "cost_per_share": 40.0, "valuation_method": "pb"},
+    {"code": "2892", "name": "玉山金", "market": "TWSE", "shares": 140000, "cost_per_share": 28.5, "valuation_method": "pb"},
+    {"code": "2881", "name": "富邦金", "market": "TWSE", "shares": 140000, "cost_per_share": 28.5, "valuation_method": "pb"},
+    {"code": "006208", "name": "富邦台50", "market": "TWSE", "shares": 100000, "cost_per_share": 100.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 4.0, "fair": 3.5, "target": 3.0}},
+    {"code": "00878", "name": "國泰永續高股息", "market": "TWSE", "shares": 130000, "cost_per_share": 23.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 6.5, "fair": 5.5, "target": 4.5}},
 ]
 
 CASH_RESERVE = 50000
