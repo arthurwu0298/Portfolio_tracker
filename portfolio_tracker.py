@@ -18,7 +18,7 @@ DB_FILE = "portfolio_history.db"
 CHART_FILE = "history_chart.png"
 
 METHOD_MAP = {
-    "yield": "殖利率法",
+    "yield": "預估殖利率",
     "pe": "本益比法",
     "pb": "淨值比法",
     "etf_yield": "目標殖利率",
@@ -54,7 +54,6 @@ class TaiwanMarketTracker:
     def fetch_market_data(self):
         print("📥 抓取 TWSE / TPEx 最新報價、本益比與 ETF 淨值資料...")
         
-        # 1. 抓取上市
         res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=15)
         if res1.status_code == 200:
             for item in res1.json(): self.twse_prices[item["Code"]] = safe_float(item.get("ClosingPrice"))
@@ -68,7 +67,6 @@ class TaiwanMarketTracker:
                     "pb": safe_float(item.get("PBratio"))
                 }
 
-        # 2. 抓取上櫃 (TPEx)
         try:
             res3 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=15)
             if res3.status_code == 200:
@@ -89,33 +87,45 @@ class TaiwanMarketTracker:
                         }
         except: pass
 
-        # 3. 抓取 ETF 淨值 (增加容錯，避免掛掉)
+        # 3. 抓取 ETF 淨值 (雙重備援機制)
+        etf_list = [item["code"] for item in PORTFOLIO if item["valuation_method"] == "etf_yield"]
         try:
+            # 第一關：證交所 OpenAPI
             res_etf = self.session.get("https://openapi.twse.com.tw/v1/opendata/t187ap46_L", timeout=15)
             if res_etf.status_code == 200:
                 for item in res_etf.json():
                     self.etf_navs[item.get("SecuritiesCompanyCode")] = safe_float(item.get("NetAssetValue"))
         except: pass
 
-        # 4. YFinance 終極防呆機制 (針對被擋 IP 的狀況)
+        # 第二關：Yahoo 奇摩股市強迫擷取 (繞過 GitHub Actions 阻擋)
+        for etf in etf_list:
+            if not self.etf_navs.get(etf):
+                print(f"⚠️ {etf} 淨值使用 Yahoo 備援抓取...")
+                try:
+                    res_y = self.session.get(f"https://tw.stock.yahoo.com/quote/{etf}.TW", timeout=10)
+                    if res_y.status_code == 200 and '"nav":' in res_y.text:
+                        nav_str = res_y.text.split('"nav":')[1].split(',')[0]
+                        nav_str = nav_str.replace('"', '').replace('}', '').strip()
+                        if safe_float(nav_str) > 0:
+                            self.etf_navs[etf] = safe_float(nav_str)
+                except Exception as e: 
+                    pass
+
+        # 4. YFinance 個股備援機制
         for item in PORTFOLIO:
             c, m = item["code"], item["market"]
             p = self.twse_prices.get(c) if m == "TWSE" else self.tpex_prices.get(c)
             mets = self.twse_metrics.get(c) if m == "TWSE" else self.tpex_metrics.get(c)
             
-            # 如果價格或 PE 抓不到，啟動 YFinance 補救
             if not p or not mets or mets.get('pe', 0.0) == 0.0:
-                print(f"⚠️ {c} 官方 API 資料遺失，啟動 yfinance 備援抓取...")
                 try:
                     yf_ticker = f"{c}.TW" if m == "TWSE" else f"{c}.TWO"
                     info = yf.Ticker(yf_ticker).info
-                    
                     if not p:
                         fallback_p = safe_float(info.get("currentPrice", info.get("regularMarketPrice", 0.0)))
                         if fallback_p > 0:
                             if m == "TWSE": self.twse_prices[c] = fallback_p
                             else: self.tpex_prices[c] = fallback_p
-                            
                     if not mets or mets.get('pe', 0.0) == 0.0:
                         pe = safe_float(info.get("trailingPE", 0.0))
                         pb = safe_float(info.get("priceToBook", 0.0))
@@ -141,29 +151,24 @@ class TaiwanMarketTracker:
             current_pe = metrics.get("pe", 0.0)
             current_pb = metrics.get("pb", 0.0)
             
-            recent_div = 0.0
-            if "00" in c:
-                recent_div = self.valuation_engine.get_recent_dividend(c)
-                dyield = round((recent_div / price) * 100, 2) if price > 0 and recent_div > 0 else 0.0
-                if dyield == 0.0: dyield = metrics.get("yield", 0.0)
-            else:
-                dyield = metrics.get("yield", 0.0)
-            
             v_method = item.get("valuation_method", "manual")
             method_ch = METHOD_MAP.get(v_method, "手動設定")
             cheap, fair, target = 0, 0, 0
             status = "⚪ 觀望"
             
+            dyield = metrics.get("yield", 0.0)
+            
             if v_method == "etf_yield":
+                recent_div = self.valuation_engine.get_recent_dividend(c)
+                dyield = round((recent_div / price) * 100, 2) if price > 0 and recent_div > 0 else dyield
+                
                 ty = item.get("target_yields", {})
                 y_c, y_f, y_t = ty.get('cheap', 0), ty.get('fair', 0), ty.get('target', 0)
                 
-                # 計算對應的目標價格 (近一年配息 / 目標殖利率)
                 p_c = round(recent_div / (y_c / 100), 2) if y_c > 0 and recent_div > 0 else 0
                 p_f = round(recent_div / (y_f / 100), 2) if y_f > 0 and recent_div > 0 else 0
                 p_t = round(recent_div / (y_t / 100), 2) if y_t > 0 and recent_div > 0 else 0
                 
-                # 結合成 "價格 (殖利率%)" 的字串格式
                 cheap = f"{p_c} ({y_c}%)" if p_c > 0 else "-"
                 fair = f"{p_f} ({y_f}%)" if p_f > 0 else "-"
                 target = f"{p_t} ({y_t}%)" if p_t > 0 else "-"
@@ -172,11 +177,37 @@ class TaiwanMarketTracker:
                 elif y_f <= dyield < y_c: status = "🔵 合理 (續抱)"
                 elif y_t < dyield < y_f: status = "🟡 偏高 (留意)"
                 elif dyield <= y_t and y_t > 0: status = "🔴 達標 (停利)"
+                
+            elif v_method == "yield":
+                ty = item.get("target_yields", {})
+                y_c, y_f, y_t = ty.get('cheap', 0), ty.get('fair', 0), ty.get('target', 0)
+                payout_ratio = item.get("payout_ratio", 0.8)
+                
+                est_eps = item.get("estimated_eps", 0.0)
+                if est_eps > 0:
+                    projected_eps = est_eps
+                else:
+                    projected_eps = price / current_pe if current_pe > 0 else 0.0
+                
+                projected_div = projected_eps * payout_ratio
+                dyield = round((projected_div / price) * 100, 2) if price > 0 else 0.0
+                
+                p_c = round(projected_div / (y_c / 100), 1) if y_c > 0 else 0
+                p_f = round(projected_div / (y_f / 100), 1) if y_f > 0 else 0
+                p_t = round(projected_div / (y_t / 100), 1) if y_t > 0 else 0
+                
+                cheap = f"{p_c} ({y_c}%)" if p_c > 0 else "-"
+                fair = f"{p_f} ({y_f}%)" if p_f > 0 else "-"
+                target = f"{p_t} ({y_t}%)" if p_t > 0 else "-"
+                
+                if dyield >= y_c and y_c > 0: status = "🟢 便宜 (加碼)"
+                elif y_f <= dyield < y_c: status = "🔵 合理 (續抱)"
+                elif y_t < dyield < y_f: status = "🟡 偏高 (留意)"
+                elif dyield <= y_t and y_t > 0: status = "🔴 達標 (停利)"
+                
             else:
                 if v_method == "manual":
                     cheap, fair, target = item.get("cheap",0), item.get("fair",0), item.get("target",0)
-                elif v_method == "yield":
-                    cheap, fair, target = self.valuation_engine.calc_yield_valuation(c, item.get("target_yields", {}))
                 elif v_method == "pe":
                     cheap, fair, target = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
                 elif v_method == "pb":
@@ -274,16 +305,20 @@ class TaiwanMarketTracker:
             
             nav = row.get('淨值', 0.0)
             dyield = row.get('殖利率(%)', 0.0)
+            v_method = row['估值法']
             
             price_html = f"<b>{row['現價']}</b>"
             if nav > 0: price_html += f"<br><span style='font-size: 11px; color: #0056b3;'>淨值: {nav}</span>"
-            if row['估值法'] == "目標殖利率" or dyield > 0:
+            
+            if v_method == "目標殖利率" and dyield > 0:
                 price_html += f"<br><span style='font-size: 11px; color: #d63384;'>最新殖利率: {dyield}%</span>"
+            elif v_method == "預估殖利率" and dyield > 0:
+                price_html += f"<br><span style='font-size: 11px; color: #d63384;'>預估殖利率: {dyield}%</span>"
             
             html += f'''<tr>
               <td class="text-left">{row['名稱']}<br><span style="font-size: 11px; color: #666;">({row['代碼']})</span></td>
               <td>{price_html}</td><td class="{pl_class}">${row['損益']:,.0f}</td>
-              <td style="color: #666; font-weight: bold;">{row['估值法']}</td>
+              <td style="color: #666; font-weight: bold;">{v_method}</td>
               <td style="color: #28a745;">{c_str}</td><td style="color: #0056b3;">{f_str}</td><td style="color: #dc3545;">{t_str}</td>
               <td>{row['狀態']}</td>
             </tr>'''
