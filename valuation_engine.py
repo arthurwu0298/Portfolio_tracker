@@ -54,6 +54,10 @@ class FinMindValuationEngine:
         if df.empty or "PER" not in df.columns: return 0, 0, 0
         ttm_eps = current_price / current_pe
         valid_pe = df[df["PER"] > 0]["PER"]
+
+        # 👈 新增防呆機制：如果撈不到有效本益比，直接回傳 0，避免 numpy 當機
+        if valid_pe.empty: return 0, 0, 0
+
         pe_20, pe_50, pe_80 = np.percentile(valid_pe, 20), np.percentile(valid_pe, 50), np.percentile(valid_pe, 80)
         return round(ttm_eps * pe_20, 1), round(ttm_eps * pe_50, 1), round(ttm_eps * pe_80, 1)
 
@@ -63,5 +67,8 @@ class FinMindValuationEngine:
         if df.empty or "PBR" not in df.columns: return 0, 0, 0
         current_bvps = current_price / current_pb
         valid_pb = df[df["PBR"] > 0]["PBR"]
+        # 👈 新增防呆機制：如果撈不到有效淨值比，直接回傳 0，避免 numpy 當機
+        if valid_pb.empty: return 0, 0, 0
+        
         pb_20, pb_50, pb_80 = np.percentile(valid_pb, 20), np.percentile(valid_pb, 50), np.percentile(valid_pb, 80)
         return round(current_bvps * pb_20, 1), round(current_bvps * pb_50, 1), round(current_bvps * pb_80, 1)
