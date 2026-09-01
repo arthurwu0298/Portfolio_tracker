@@ -18,6 +18,8 @@ PORTFOLIO = [
     {"code": "2884", "name": "玉山金", "market": "TWSE", "shares": 1400, "cost_per_share": 28.5,
      "valuation_method": "pb"},
 
+    {"code": "2881", "name": "富邦金", "market": "TWSE", "shares": 140000, "cost_per_share": 28.5, "valuation_method": "pb"},
+
     {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 1000, "cost_per_share": 130.0,
      "valuation_method": "pe"},
 
