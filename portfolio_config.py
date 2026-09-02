@@ -29,12 +29,16 @@ PORTFOLIO = [
      "valuation_method": "yield", "payout_ratio": 0.66,
      "note": "改用殖利率法：配息率取自2025年度(現金1.4/EPS2.12≈66%)，預估EPS改為自動依季報年化，實際配息率仍待下次董事會正式公告更新"},
 
+     {"code": "2881", "name": "富邦金", "market": "TWSE", "shares": 1400, "cost_per_share": 28.5,
+          "valuation_method": "yield", "payout_ratio": 0.66,
+          "note": "改用殖利率法：配息率取自2025年度(現金1.4/EPS2.12≈66%)，預估EPS改為自動依季報年化，實際配息率仍待下次董事會正式公告更新"},
+
     {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 1000, "cost_per_share": 130.0,
      "valuation_method": "pe"},
 
     {"code": "006208", "name": "富邦台50", "market": "TWSE", "shares": 1000, "cost_per_share": 100.0,
-     "valuation_method": "etf_yield",
-     "note": "殖利率法僅供參考；報酬主要來自台積電等權值股資本利得，殖利率壓縮不必然代表偏貴"},
+     "valuation_method": "trend",
+     "note": "報酬主要來自台積電等權值股資本利得，改用趨勢乖離法評估相對自己200日均線的位置，不再用殖利率法判斷貴便宜"},
 
     {"code": "00878", "name": "國泰永續高股息", "market": "TWSE", "shares": 1300, "cost_per_share": 23.0,
      "valuation_method": "etf_yield"},
@@ -70,12 +74,12 @@ PORTFOLIO = [
      "valuation_method": "pe"},
 
     {"code": "0052", "name": "富邦科技", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
-     "valuation_method": "etf_yield",
-     "note": "殖利率法僅供參考；成分股偏科技成長股，報酬主要來自資本利得而非股利"},
+     "valuation_method": "trend",
+     "note": "成分股偏科技成長股，報酬主要來自資本利得，改用趨勢乖離法評估相對自己200日均線的位置"},
 
     {"code": "0050", "name": "元大台灣50", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
-     "valuation_method": "etf_yield",
-     "note": "殖利率法僅供參考；報酬主要來自台積電等權值股資本利得，殖利率壓縮不必然代表偏貴"},
+     "valuation_method": "trend",
+     "note": "報酬主要來自台積電等權值股資本利得，改用趨勢乖離法評估相對自己200日均線的位置，不再用殖利率法判斷貴便宜"},
 
     {"code": "0056", "name": "元大高股息", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
      "valuation_method": "etf_yield"},

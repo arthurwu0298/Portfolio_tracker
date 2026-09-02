@@ -25,6 +25,7 @@ METHOD_MAP = {
     "pe": "本益比法",
     "pb": "淨值比法",
     "etf_yield": "目標殖利率",
+    "trend": "趨勢乖離法",
     "manual": "手動設定"
 }
 
@@ -116,7 +117,7 @@ class TaiwanMarketTracker:
             self.fetch_errors.append(f"TPEx本益比/淨值比API請求失敗: {e}")
 
         # 3. 抓取 ETF 淨值 (雙重備援機制)
-        etf_list = [item["code"] for item in PORTFOLIO if item["valuation_method"] == "etf_yield"]
+        etf_list = [item["code"] for item in PORTFOLIO if item["valuation_method"] in ("etf_yield", "trend")]
         try:
             res_etf = self.session.get("https://openapi.twse.com.tw/v1/opendata/t187ap46_L", timeout=15)
             if res_etf.status_code == 200:
@@ -201,7 +202,32 @@ class TaiwanMarketTracker:
 
             dyield = metrics.get("yield", 0.0)
 
-            if v_method == "etf_yield":
+            if v_method == "trend":
+                # 給市值型/科技型ETF等報酬主要來自資本利得的標的用，
+                # 不看殖利率，看現價相對自己200日均線的乖離率在近5年歷史的位置。
+                cheap, fair, target, deviation, val_percentile = \
+                    self.valuation_engine.calc_price_trend_valuation(c, price)
+
+                # 順便還是抓一下目前殖利率當「附註資訊」顯示，不用來判斷狀態
+                recent_div = self.valuation_engine.get_recent_dividend(c)
+                dyield = round((recent_div / price) * 100, 2) if price > 0 and recent_div > 0 else dyield
+
+                if val_percentile is None:
+                    status = "⚪ 觀望 (乖離率資料不足)"
+                elif val_percentile <= 20:
+                    status = f"🟢 相對趨勢偏弱 (乖離率第{val_percentile}百分位，非顯著低估訊號)"
+                elif val_percentile <= 80:
+                    status = f"🔵 相對趨勢正常 (乖離率第{val_percentile}百分位)"
+                elif val_percentile < 95:
+                    status = f"🟡 相對趨勢偏熱 (乖離率第{val_percentile}百分位，留意但非賣訊)"
+                else:
+                    status = (f"🟠 乖離率創近5年新高(第{val_percentile}百分位)，"
+                              f"若處於結構性多頭(如AI/半導體) 屬常態，非自動停利訊號")
+
+                trend_note = f"此為趨勢乖離法，非傳統便宜/合理/目標價；現在乖離率{deviation}%"
+                extra_note = f"{extra_note}；{trend_note}" if extra_note else trend_note
+
+            elif v_method == "etf_yield":
                 recent_div = self.valuation_engine.get_recent_dividend(c)
                 dyield = round((recent_div / price) * 100, 2) if price > 0 and recent_div > 0 else dyield
 
@@ -429,6 +455,8 @@ class TaiwanMarketTracker:
                 price_html += f"<br><span style='font-size: 11px; color: #d63384;'>最新殖利率: {dyield}%</span>"
             elif v_method == "預估殖利率" and dyield > 0:
                 price_html += f"<br><span style='font-size: 11px; color: #d63384;'>預估殖利率: {dyield}%</span>"
+            elif v_method == "趨勢乖離法" and dyield > 0:
+                price_html += f"<br><span style='font-size: 11px; color: #d63384;'>參考殖利率: {dyield}%</span>"
 
             status_html = row['狀態']
             if note:

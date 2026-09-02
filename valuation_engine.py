@@ -263,6 +263,60 @@ class FinMindValuationEngine:
         y_target = round(np.percentile(valid_yield, 20), 2)
         return y_cheap, y_fair, y_target
 
+    # ---------- 趨勢乖離法（給市值型/科技型ETF等報酬主要來自資本利得的標的用）----------
+
+    def calc_price_trend_valuation(self, stock_id, current_price):
+        """
+        給0050、006208、0052這類「報酬主要來自成分股資本利得、不是股利」的市值型/
+        科技型ETF用的替代估值法，取代殖利率法當作主要判斷依據。
+
+        邏輯：這類ETF的價值由台積電等權值股的獲利成長帶動，用殖利率或本益比評斷
+        「貴不貴」意義有限。改用「現價相對於自己200日均線的乖離率」，把近5年歷史
+        乖離率的20/50/80百分位換算回價格(用現在的200日均線反推)，當作便宜/合理/
+        目標價；這是判斷一檔大盤型部位相對自己趨勢是否漲(跌)過頭的標準做法，跟股利
+        完全脫鉤，方向上更貼近「這類ETF的錢是怎麼賺的」。
+
+        回傳 (便宜價, 合理價, 目標價, 現在乖離率%, 乖離率所在近5年歷史百分位)，
+        抓不到資料時回傳 (0, 0, 0, 0.0, None)。
+
+        已知限制：這個方法看的是相對自己趨勢的位置，不是相對「合理價值」的位置。
+        在像AI/半導體這種真正的結構性多頭格局裡，乖離率長期偏高是常態，不代表
+        該賣出；反過來乖離率偏低也可能只是短期回檔，不代表基本面變差。這個方法
+        解決的是「殖利率法不適合這類標的」的問題，但沒有解決「怎麼判斷真正合理
+        價值」的問題——後者對指數型ETF來說本來就沒有公認的簡單公式。
+        """
+        df = self._fetch_data("TaiwanStockPrice", stock_id, years_back=5)
+        if df.empty or "close" not in df.columns:
+            return 0, 0, 0, 0.0, None
+        try:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date")
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df = df.dropna(subset=["close"])
+            df["ma200"] = df["close"].rolling(window=200).mean()
+            df["deviation"] = (df["close"] - df["ma200"]) / df["ma200"] * 100
+            df = df.dropna(subset=["deviation"])
+            if df.empty:
+                return 0, 0, 0, 0.0, None
+
+            current_ma200 = df["ma200"].iloc[-1]
+            if current_ma200 <= 0:
+                return 0, 0, 0, 0.0, None
+
+            p20_dev = np.percentile(df["deviation"], 20)
+            p50_dev = np.percentile(df["deviation"], 50)
+            p80_dev = np.percentile(df["deviation"], 80)
+            cheap_price = round(current_ma200 * (1 + p20_dev / 100), 1)
+            fair_price = round(current_ma200 * (1 + p50_dev / 100), 1)
+            target_price = round(current_ma200 * (1 + p80_dev / 100), 1)
+
+            current_deviation = round((current_price - current_ma200) / current_ma200 * 100, 2)
+            current_percentile = round((df["deviation"] < current_deviation).mean() * 100, 1)
+            return cheap_price, fair_price, target_price, current_deviation, current_percentile
+        except Exception:
+            return 0, 0, 0, 0.0, None
+
     # ---------- 營收動能（交叉驗證估值異常是否有基本面支撐） ----------
 
     def get_revenue_momentum(self, stock_id):
