@@ -116,7 +116,6 @@ class FinMindValuationEngine:
         except: return 0.0
 
     def get_5yr_average_eps(self, stock_id):
-        # Calculates 5-year average EPS to smooth out cyclical earnings
         df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=6)
         if df.empty or "type" not in df.columns: return 0.0
         try:
@@ -164,3 +163,59 @@ class FinMindValuationEngine:
             if len(recent) < 4: return None
             return {"latest_yoy": round(recent.iloc[-1], 1), "accelerating": bool(recent.iloc[-1] > recent.iloc[-4])}
         except: return None
+
+    # ---------- 新增：動態抓取歷史殖利率區間 ----------
+    def calc_yield_percentile_bounds(self, stock_id):
+        """
+        自動抓近5年歷史殖利率，回傳 20/50/80 百分位數作為 便宜/合理/目標 殖利率
+        (殖利率越高代表越便宜，所以便宜價對應 80 百分位)
+        回傳: (便宜殖利率, 合理殖利率, 目標殖利率)
+        """
+        df = self._fetch_data("TaiwanStockPER", stock_id, years_back=5)
+        if df.empty or "dividend_yield" not in df.columns: return 0.0, 0.0, 0.0
+        try:
+            valid_yields = df[df["dividend_yield"] > 0]["dividend_yield"]
+            if valid_yields.empty: return 0.0, 0.0, 0.0
+            
+            y_target = round(np.percentile(valid_yields, 20), 2)
+            y_fair = round(np.percentile(valid_yields, 50), 2)
+            y_cheap = round(np.percentile(valid_yields, 80), 2)
+            return y_cheap, y_fair, y_target
+        except: return 0.0, 0.0, 0.0
+
+    # ---------- 新增：趨勢乖離法 ----------
+    def calc_price_trend_valuation(self, stock_id, current_price):
+        """
+        給0050、006208、0052這類「報酬主要來自成分股資本利得」的市值/科技型ETF使用。
+        """
+        df = self._fetch_data("TaiwanStockPrice", stock_id, years_back=5)
+        if df.empty or "close" not in df.columns:
+            return 0, 0, 0, 0.0, None
+        try:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date")
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df = df.dropna(subset=["close"])
+            df["ma200"] = df["close"].rolling(window=200).mean()
+            df["deviation"] = (df["close"] - df["ma200"]) / df["ma200"] * 100
+            df = df.dropna(subset=["deviation"])
+            if df.empty:
+                return 0, 0, 0, 0.0, None
+
+            current_ma200 = df["ma200"].iloc[-1]
+            if current_ma200 <= 0:
+                return 0, 0, 0, 0.0, None
+
+            p20_dev = np.percentile(df["deviation"], 20)
+            p50_dev = np.percentile(df["deviation"], 50)
+            p80_dev = np.percentile(df["deviation"], 80)
+            cheap_price = round(current_ma200 * (1 + p20_dev / 100), 1)
+            fair_price = round(current_ma200 * (1 + p50_dev / 100), 1)
+            target_price = round(current_ma200 * (1 + p80_dev / 100), 1)
+
+            current_deviation = round((current_price - current_ma200) / current_ma200 * 100, 2)
+            current_percentile = round((df["deviation"] < current_deviation).mean() * 100, 1)
+            return cheap_price, fair_price, target_price, current_deviation, current_percentile
+        except Exception:
+            return 0, 0, 0, 0.0, None
