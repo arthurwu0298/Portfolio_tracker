@@ -100,19 +100,27 @@ class TaiwanMarketTracker:
                 except Exception as e:
                     self.fetch_errors.append(f"{item['name']}({c}) 估值請求失敗: {e}")
 
-        # 3. 抓取 ETF 淨值 (保留 Yahoo 隱藏爬蟲備援，針對單一標的)
+        # 3. 抓取 ETF 淨值 (改接 FinMind TaiwanStockNAV 資料集)
         etf_list = [item["code"] for item in PORTFOLIO if item["valuation_method"] == "etf_yield"]
         for etf in etf_list:
             try:
-                res_y = self.session.get(f"https://tw.stock.yahoo.com/quote/{etf}.TW", timeout=10)
-                if res_y.status_code == 200 and '"nav":' in res_y.text:
-                    nav_str = res_y.text.split('"nav":')[1].split(',')[0].replace('"', '').replace('}', '').strip()
-                    if safe_float(nav_str) > 0:
-                        self.etf_navs[etf] = safe_float(nav_str)
+                res_nav = self.session.get("https://api.finmindtrade.com/api/v4/data", 
+                                       params={"dataset": "TaiwanStockNAV", "data_id": etf, "start_date": start_date, "token": FINMIND_TOKEN}, timeout=10)
+                if res_nav.status_code == 200:
+                    data_nav = res_nav.json().get("data", [])
+                    if data_nav:
+                        # 取得資料中最新一筆的 nav 數值
+                        latest_nav = safe_float(data_nav[-1].get("nav", 0.0))
+                        if latest_nav > 0:
+                            self.etf_navs[etf] = latest_nav
+                        else:
+                            self.fetch_errors.append(f"{etf} FinMind 淨值資料解析失敗 (數值為 0)")
                     else:
-                        self.fetch_errors.append(f"{etf} Yahoo備援淨值解析失敗")
+                        self.fetch_errors.append(f"{etf} FinMind 無近期淨值資料")
+                else:
+                    self.fetch_errors.append(f"{etf} FinMind 淨值 API 回應異常")
             except Exception as e: 
-                self.fetch_errors.append(f"{etf} Yahoo淨值請求失敗")
+                self.fetch_errors.append(f"{etf} FinMind 淨值請求失敗: {e}")
 
     def calculate(self):
         self.fetch_market_data()
