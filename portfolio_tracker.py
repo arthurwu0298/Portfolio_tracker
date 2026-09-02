@@ -334,16 +334,43 @@ class TaiwanMarketTracker:
             if res_twse.status_code == 200: mops_data.extend(res_twse.json())
             if res_tpex.status_code == 200: mops_data.extend(res_tpex.json())
             
+            # 確保資料依照「日期+時間」排序 (新 -> 舊)，才能抓到最即時的公告
+            def get_sort_key(item):
+                d = str(item.get("發言日期", item.get("SpokeDate", "")))
+                t = str(item.get("發言時間", item.get("SpokeTime", "")))
+                return d + t
+            mops_data.sort(key=get_sort_key, reverse=True)
+            
+            # 紀錄每檔股票抓取的數量，避免單一股票洗版
+            official_news_count = {code: 0 for code in core_tickers}
+            
             for item in mops_data:
-                code = item.get("公司代號", item.get("SecuritiesCompanyCode", ""))
-                if code in core_tickers:
-                    date_str = item.get("發言日期", "")
-                    time_str = item.get("發言時間", "")
-                    title = item.get("主旨", "")
+                code = str(item.get("公司代號", item.get("SecuritiesCompanyCode", "")))
+                
+                # 若是我們的持股，且目前抓取不到 2 則，才進行處理
+                if code in core_tickers and official_news_count[code] < 2:
+                    date_str = str(item.get("發言日期", item.get("SpokeDate", "")))
+                    time_str = str(item.get("發言時間", item.get("SpokeTime", "")))
                     
+                    # 暴力防呆：嘗試多種可能的欄位名稱 (中文/英文)
+                    title = str(item.get("主旨", "") or item.get("Subject", "") or item.get("說明", "")).strip()
+                    
+                    # 如果連上述欄位都空，暴力去掃這個 JSON 裡面最長的字串來當作標題
+                    if not title:
+                        candidates = [str(v) for k, v in item.items() if k not in ["公司代號", "SecuritiesCompanyCode", "發言日期", "發言時間", "符合條款", "事實發生日"]]
+                        title = max(candidates, key=len) if candidates else "無主旨內容"
+                    
+                    # 避免有些公司把整篇新聞稿塞在標題裡，截斷至前 80 字
+                    title = title.replace("\n", " ").replace("\r", "")
+                    if len(title) > 80:
+                        title = title[:80] + "..."
+                        
                     official_html += f"<li><b>[{core_tickers[code]} {code}]</b> {date_str} {time_str} - {title}</li>"
                     official_text_for_ai += f"[{core_tickers[code]} {code}] {date_str} {title}\n"
+                    
                     has_official = True
+                    official_news_count[code] += 1
+                    
         except Exception as e:
             print(f"重大訊息抓取失敗: {e}")
             
