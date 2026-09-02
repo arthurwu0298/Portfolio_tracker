@@ -10,8 +10,7 @@ PORTFOLIO = [
     # ⚠️ 【修正】富邦金：已調整為佔位數字，請依據真實對帳單將 60.0 與 1000 更改為正確的成本與股數
     {"code": "2881", "name": "富邦金", "market": "TWSE", "shares": 100000, "cost_per_share": 0.0, "valuation_method": "yield", "payout_ratio": 0.5, "target_yields": {"cheap": 5.0, "fair": 4.0, "target": 3.0}},
     {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 1000, "cost_per_share": 130.0, "valuation_method": "pe"},
-    {"code": "006208", "name": "富邦台50", "market": "TWSE", "shares": 1000, "cost_per_share": 100.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 4.0, "fair": 3.5, "target": 3.0}},
-    {"code": "00878", "name": "國泰永續高股息", "market": "TWSE", "shares": 1300, "cost_per_share": 23.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 6.5, "fair": 5.5, "target": 4.5}},
+    
 
     # ⚠️ 【修正】南亞科、華邦電、創見改回機械式年化預估 (yield)
     {"code": "2408", "name": "南亞科", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "yield", "payout_ratio": 0.70, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
@@ -24,8 +23,13 @@ PORTFOLIO = [
     {"code": "2890", "name": "永豐金", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "yield", "payout_ratio": 0.56, "target_yields": {"cheap": 5.0, "fair": 4.0, "target": 3.0}},
     {"code": "5609", "name": "中菲行", "market": "TPEx", "shares": 0, "cost_per_share": 0.0, "valuation_method": "pe"},
     
-    {"code": "0052", "name": "富邦科技", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 3.5, "fair": 3.0, "target": 2.0}},
-    {"code": "0050", "name": "元大台灣50", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 4.0, "fair": 3.5, "target": 3.0}},
+    # ⚠️ 【修正】市值/科技型 ETF 切換為趨勢乖離法
+    {"code": "006208", "name": "富邦台50", "market": "TWSE", "shares": 1000, "cost_per_share": 100.0, "valuation_method": "trend"},
+    {"code": "0052", "name": "富邦科技", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "trend"},
+    {"code": "0050", "name": "元大台灣50", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "trend"},
+
+    # ⚠️ 【維持】高股息 ETF 仍使用歷史殖利率法
+    {"code": "00878", "name": "國泰永續高股息", "market": "TWSE", "shares": 1300, "cost_per_share": 23.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 6.5, "fair": 5.5, "target": 4.5}},
     {"code": "0056", "name": "元大高股息", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "valuation_method": "etf_yield", "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
 ]
 
