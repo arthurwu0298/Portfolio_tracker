@@ -118,6 +118,91 @@ class FinMindValuationEngine:
         except Exception:
             return 0.0
 
+    def get_stock_dividend_info(self, stock_id):
+        """
+        抓取最近一次公告的股利政策(TaiwanStockDividend)，拆出現金股利、股票股利(元，
+        面額10元基礎)、以及對應發放年度的EPS加總，供計算「含股票股利的總配發率」使用。
+
+        設計理由：股票股利本質上是把保留盈餘轉列股本、配發新股給股東，公司總市值不會
+        因此改變，跟現金股利「公司現金真的減少、股東真的拿到錢」性質不同，不應該直接
+        加進現金殖利率內、套用同一組目標殖利率門檻去反推便宜/合理/目標價(那樣會系統性
+        高估真實現金報酬)。因此本函式只回傳原始數字，讓呼叫端另外顯示「總配發率」當
+        參考資訊，不會混進主要的現金殖利率估值計算。
+
+        回傳 (股票股利元, 現金股利元, 對應年度EPS加總)，抓不到資料時回傳 (0.0, 0.0, 0.0)。
+        """
+        df = self._fetch_data("TaiwanStockDividend", stock_id, years_back=2)
+        if df.empty or "year" not in df.columns:
+            return 0.0, 0.0, 0.0
+        try:
+            df = df.copy()
+            df["year_int"] = pd.to_numeric(df["year"], errors="coerce")
+            df = df.dropna(subset=["year_int"]).sort_values("year_int")
+            if df.empty:
+                return 0.0, 0.0, 0.0
+            latest = df.iloc[-1]
+            div_year = int(latest["year_int"])
+
+            stock_div = float(latest.get("StockEarningsDistribution", 0) or 0) + \
+                        float(latest.get("StockStatutorySurplus", 0) or 0)
+            cash_div = float(latest.get("CashEarningsDistribution", 0) or 0) + \
+                       float(latest.get("CashStatutorySurplus", 0) or 0)
+
+            eps_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=3)
+            year_eps = 0.0
+            if not eps_df.empty and "type" in eps_df.columns:
+                eps_rows = eps_df[eps_df["type"] == "EPS"].copy()
+                if not eps_rows.empty:
+                    eps_rows["date"] = pd.to_datetime(eps_rows["date"])
+                    year_rows = eps_rows[eps_rows["date"].dt.year == div_year]
+                    year_eps = year_rows["value"].sum()
+
+            return round(stock_div, 3), round(cash_div, 3), round(year_eps, 3)
+        except Exception:
+            return 0.0, 0.0, 0.0
+
+    # ---------- 預估EPS自動年化（取代手動維護 estimated_eps） ----------
+
+    def get_annualized_eps(self, stock_id):
+        """
+        用 FinMind「綜合損益表」(TaiwanStockFinancialStatements) 的季度EPS，
+        把今年至今已公布的季度EPS加總後，依已公布季數年化推算全年EPS。
+        例如只公布了上半年(2季)，就用「上半年累計EPS x 2」估全年；
+        公布3季就用「前3季累計EPS x 4/3」，以此類推，Q4公布後就是實際全年值。
+
+        若今年一季都還沒公布(通常是1-2月間)，退回去年整年EPS加總當作估計。
+        抓不到資料時回傳 0.0，呼叫端應自行退回其他備援方式(如TTM本益比反推)。
+
+        已知限制：若公司當年度有配發股票股利(無償配股)，IAS 33要求追溯調整
+        加權平均股數，但FinMind的季度EPS存的是各季公布當下的原始值、不會回頭
+        改寫，同一年度內股利發放前後的EPS股數基準可能不一致，用本函式加總會有
+        小幅誤差(通常是高估)，發放股票股利比例高的公司(如部分官股銀行)較明顯。
+        """
+        df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=2)
+        if df.empty or "type" not in df.columns:
+            return 0.0
+        try:
+            eps_df = df[df["type"] == "EPS"].copy()
+            if eps_df.empty:
+                return 0.0
+            eps_df["date"] = pd.to_datetime(eps_df["date"])
+            eps_df = eps_df.sort_values("date")
+
+            this_year = datetime.now().year
+            this_year_rows = eps_df[eps_df["date"].dt.year == this_year]
+            if not this_year_rows.empty:
+                ytd_eps = this_year_rows["value"].sum()
+                quarters_reported = len(this_year_rows)
+                return round(ytd_eps * (4 / quarters_reported), 2)
+
+            # 今年還沒有任何季報(通常是1月初) → 退回去年整年EPS加總
+            last_year_rows = eps_df[eps_df["date"].dt.year == this_year - 1]
+            if not last_year_rows.empty:
+                return round(last_year_rows["value"].sum(), 2)
+            return 0.0
+        except Exception:
+            return 0.0
+
     # ---------- 估值：本益比 / 淨值比 + 歷史百分位 ----------
 
     def calc_pe_valuation(self, stock_id, current_price, current_pe):

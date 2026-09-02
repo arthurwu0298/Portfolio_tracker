@@ -230,11 +230,17 @@ class TaiwanMarketTracker:
                 y_c, y_f, y_t = ty.get('cheap', 0), ty.get('fair', 0), ty.get('target', 0)
                 payout_ratio = item.get("payout_ratio", 0.8)
 
+                # 預估EPS優先順序：
+                # 1. config手動指定的 estimated_eps（想覆寫自動結果時使用，例如參考法人共識）
+                # 2. 自動年化：今年至今已公布季報的EPS加總，依季數年化推算全年
+                # 3. 最後備援：TTM本益比反推（price / 目前本益比）
                 est_eps = item.get("estimated_eps", 0.0)
                 if est_eps > 0:
                     projected_eps = est_eps
                 else:
-                    projected_eps = price / current_pe if current_pe > 0 else 0.0
+                    projected_eps = self.valuation_engine.get_annualized_eps(c)
+                    if projected_eps <= 0:
+                        projected_eps = price / current_pe if current_pe > 0 else 0.0
 
                 projected_div = projected_eps * payout_ratio
                 dyield = round((projected_div / price) * 100, 2) if price > 0 else 0.0
@@ -255,6 +261,19 @@ class TaiwanMarketTracker:
                     status = "🟡 偏高 (留意)"
                 elif dyield <= y_t and y_t > 0:
                     status = "🔴 達標 (停利)"
+
+                # ---- 含股票股利的總配發率（僅供參考，不影響上面的現金殖利率估值）----
+                # 股票股利本質是保留盈餘轉股本、配發新股，公司總市值不因此改變，
+                # 跟現金股利「公司現金真的變少、股東真的拿到錢」性質不同，因此不
+                # 直接併入 dyield 計算便宜/合理/目標價，只另外附註總配發率讓你
+                # 知道公司實際上把多少比例的獲利以「某種形式」還給股東。
+                stock_div, actual_cash_div, div_year_eps = self.valuation_engine.get_stock_dividend_info(c)
+                if stock_div > 0 and div_year_eps > 0:
+                    total_payout_pct = round((actual_cash_div + stock_div) / div_year_eps * 100, 1)
+                    stock_yield_pct = round(stock_div / 10 * 100, 2)
+                    stock_note = (f"另有股票股利{stock_div}元(約當年增股數{stock_yield_pct}%，"
+                                  f"未列入殖利率估值)；含股票股利的總配發率約{total_payout_pct}%")
+                    extra_note = f"{extra_note}；{stock_note}" if extra_note else stock_note
 
             else:
                 if v_method == "manual":

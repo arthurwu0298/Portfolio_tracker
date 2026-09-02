@@ -12,13 +12,19 @@ PORTFOLIO = [
     {"code": "6146", "name": "耕興", "market": "TPEx", "shares": 300, "cost_per_share": 233.3,
      "valuation_method": "pe"},
 
+    # 金融股改用「去年現金配息率 x 今年預估EPS」推算現金殖利率法，取代淨值比法。
+    # payout_ratio 為 2025年度實際現金股利/EPS(固定值，需等下次股利公告才會變動)。
+    # 沒有設定 estimated_eps 時，程式會自動用 get_annualized_eps() 抓當年度已公布
+    # 季報的EPS加總年化，每次新一季財報公布就會自動更新，不需要手動維護這個數字。
     {"code": "2886", "name": "兆豐金", "market": "TWSE", "shares": 1000, "cost_per_share": 40.0,
-     "valuation_method": "pb"},
+     "valuation_method": "yield", "payout_ratio": 0.74,
+     "target_yields": {"cheap": 5.0, "fair": 4.0, "target": 3.0},
+     "note": "改用殖利率法：配息率取自2025年度(現金1.75/EPS2.36≈74%)，預估EPS改為自動依季報年化，實際配息率仍待下次董事會正式公告更新"},
 
     {"code": "2884", "name": "玉山金", "market": "TWSE", "shares": 1400, "cost_per_share": 28.5,
-     "valuation_method": "pb"},
-
-    {"code": "2881", "name": "富邦金", "market": "TWSE", "shares": 140000, "cost_per_share": 28.5, "valuation_method": "pb"},
+     "valuation_method": "yield", "payout_ratio": 0.66,
+     "target_yields": {"cheap": 5.0, "fair": 4.0, "target": 3.0},
+     "note": "改用殖利率法：配息率取自2025年度(現金1.4/EPS2.12≈66%)，預估EPS改為自動依季報年化，實際配息率仍待下次董事會正式公告更新"},
 
     {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 1000, "cost_per_share": 130.0,
      "valuation_method": "pe"},
@@ -31,10 +37,14 @@ PORTFOLIO = [
      "valuation_method": "etf_yield", "target_yields": {"cheap": 6.5, "fair": 5.5, "target": 4.5}},
 
     {"code": "2408", "name": "南亞科", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
-     "valuation_method": "pb"},
+     "valuation_method": "yield", "payout_ratio": 0.70, "estimated_eps": 40.0,
+     "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0},
+     "note": "改用與創見相同的景氣財殖利率法：配息率取自2025年度(現金1.5/EPS2.13≈70%)。estimated_eps手動設為法人(Factset)2026年共識中位數約40元(而非自動年化)，因記憶體循環股獲利加速度極快，機械式年化上半年數字容易低估；想改用自動年化，把這個欄位刪掉或設成0即可。記憶體循環反轉時獲利與配息可能大幅回落，估值僅供參考"},
 
     {"code": "2344", "name": "華邦電", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
-     "valuation_method": "pb"},
+     "valuation_method": "yield", "payout_ratio": 0.57, "estimated_eps": 21.0,
+     "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0},
+     "note": "改用與創見相同的景氣財殖利率法：配息率取自2025年度(現金0.5/EPS0.88≈57%)。estimated_eps手動設為法人(Factset)2026年共識中位數約21元(而非自動年化)，理由同南亞科；想改用自動年化，把這個欄位刪掉或設成0即可。記憶體循環反轉時獲利與配息可能大幅回落，估值僅供參考"},
 
     {"code": "2451", "name": "創見", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
      "valuation_method": "yield", "payout_ratio": 0.90,
@@ -42,18 +52,22 @@ PORTFOLIO = [
      "note": "本波為記憶體超級循環帶來的景氣財，非穩定配息型公司，股利波動風險較高"},
 
     {"code": "2812", "name": "台中銀", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
-     "valuation_method": "pb",
-     "note": "先前涉及洗錢案件，法律/商譽風險未反映於淨值比模型，估值僅供參考"},
+     "valuation_method": "yield", "payout_ratio": 0.25,
+     "target_yields": {"cheap": 3.0, "fair": 2.2, "target": 1.5},
+     "note": "改用殖利率法：配息率取自2025年度(現金0.39/EPS1.53≈25%，偏好股票股利)，預估EPS改為自動依季報年化；先前涉及洗錢案件，法律/商譽風險未反映於本模型，估值僅供參考"},
 
     {"code": "2330", "name": "台積電", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
      "valuation_method": "pe"},
 
     {"code": "2834", "name": "台企銀", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
-     "valuation_method": "pb"},
+     "valuation_method": "yield", "payout_ratio": 0.24,
+     "target_yields": {"cheap": 2.2, "fair": 1.5, "target": 1.0},
+     "note": "改用殖利率法：配息率取自2025年度(現金0.3/EPS1.26≈24%，偏好股票股利)，預估EPS改為自動依季報年化"},
 
     {"code": "2890", "name": "永豐金", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,
-     "valuation_method": "pb",
-     "note": "合併京城銀後部分法人已上修目標本淨比，模型可能尚未反映最新合併綜效"},
+     "valuation_method": "yield", "payout_ratio": 0.56,
+     "target_yields": {"cheap": 5.0, "fair": 4.0, "target": 3.0},
+     "note": "改用殖利率法：配息率取自2025年度(現金1.1/EPS1.97≈56%)，預估EPS改為自動依季報年化，已反映京城銀合併綜效帶動的獲利跳升"},
 
     {"code": "5609", "name": "中菲行", "market": "TPEx", "shares": 0, "cost_per_share": 0.0,
      "valuation_method": "pe"},
