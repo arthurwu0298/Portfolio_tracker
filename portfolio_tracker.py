@@ -195,11 +195,14 @@ class TaiwanMarketTracker:
                 elif y_t < dyield < y_f: status = "🟡 偏高 (留意)"
                 elif dyield <= y_t and y_t > 0: status = "🔴 達標 (停利)"
                 
+                # ⬇️ 請替換為以下放寬條件的新寫法 ⬇️
                 stock_div, actual_cash_div, div_year_eps = self.valuation_engine.get_stock_dividend_info(c)
-                if stock_div > 0 and div_year_eps > 0:
-                    stock_note = f"另有股票股利{stock_div}元；總配發率約{round((actual_cash_div + stock_div) / div_year_eps * 100, 1)}%"
+                if stock_div > 0:
+                    stock_note = f"另有股票股利 {stock_div} 元 (未列入估值)"
+                    if div_year_eps > 0:
+                        total_payout_pct = round((actual_cash_div + stock_div) / div_year_eps * 100, 1)
+                        stock_note = f"另有股票股利 {stock_div} 元；總配發率約 {total_payout_pct}% (未列入估值)"
                     extra_note = f"{extra_note}；{stock_note}" if extra_note else stock_note
-
             else:
                 val_percentile = None
                 if v_method == "manual": cheap, fair, target = item.get("cheap", 0), item.get("fair", 0), item.get("target", 0)
@@ -279,27 +282,25 @@ class TaiwanMarketTracker:
         plt.savefig(CHART_FILE, dpi=120)
         plt.close()
 
-    # --- 新增：動態抓取新聞與生成 AI 評估 ---
+    # --- 新增：動態抓取「官方公告」+「媒體新聞」，並生成 AI 評估 ---
     def get_news_and_analysis(self, df):
-        print("📰 正在動態抓取投資組合標的最新新聞...")
+        print("📰 正在動態抓取投資組合標的最新官方公告與媒體新聞...")
         
-        # 動態從 PORTFOLIO 抓取所有股票代碼與名稱
         core_tickers = {item["code"]: item["name"] for item in PORTFOLIO}
         
+        # 1. 抓取 Yahoo 媒體新聞 (市場情緒與前瞻)
         news_text_for_ai = ""
-        news_html = "<h3 style='margin-top: 30px;'>📰 投資組合最新市場消息 (近3日)</h3><ul style='font-size: 13px; line-height: 1.6;'>"
-        
+        news_html = "<h3 style='margin-top: 30px;'>📰 媒體最新市場消息 (近3日)</h3><ul style='font-size: 13px; line-height: 1.6;'>"
         has_news = False
+        
         for code, name in core_tickers.items():
             try:
-                # 這裡統一加上 .TW，上櫃股票(TWO)在 yfinance 中有時也能用 .TW 查到新聞，或可作容錯處理
                 tkr = yf.Ticker(f"{code}.TW")
                 news = tkr.news
                 if news:
                     ticker_news_count = 0
                     for n in news:
                         pub_time = datetime.fromtimestamp(n['providerPublishTime'])
-                        # 過濾機制：只抓取近 3 天內的新聞，確保資訊即時性
                         if datetime.now() - pub_time < timedelta(days=3):
                             pub_time_str = pub_time.strftime('%Y-%m-%d')
                             title = n['title']
@@ -309,20 +310,49 @@ class TaiwanMarketTracker:
                             news_text_for_ai += f"[{name} {code}] {title}\n"
                             
                             ticker_news_count += 1
-                            # 每檔標的最多只取 2 則最新新聞，避免信件與 AI Prompt 過長
-                            if ticker_news_count >= 2:
-                                break
-                    if ticker_news_count > 0:
-                        has_news = True
-            except Exception as e:
-                # 若該標的無新聞或抓取失敗則直接跳過
+                            if ticker_news_count >= 2: break
+                    if ticker_news_count > 0: has_news = True
+            except Exception:
                 pass
-        
+                
         news_html += "</ul>"
         if not has_news:
-            news_html = "<h3 style='margin-top: 30px;'>📰 投資組合最新市場消息</h3><p style='font-size: 13px;'>投資組合標的近 3 日暫無重大新聞。</p>"
-            news_text_for_ai = "今日投資組合標的暫無重大新聞。"
+            news_html = "<h3 style='margin-top: 30px;'>📰 媒體最新市場消息</h3><p style='font-size: 13px;'>投資組合標的近 3 日暫無重大新聞。</p>"
+            news_text_for_ai = "今日暫無重大媒體新聞。"
 
+        # 2. 抓取公開資訊觀測站 (官方絕對事實)
+        official_text_for_ai = ""
+        official_html = "<h3 style='margin-top: 20px;'>🏛️ 官方重大訊息公告 (公開資訊觀測站)</h3><ul style='font-size: 13px; line-height: 1.6;'>"
+        has_official = False
+        
+        try:
+            # 同時抓取上市 (TWSE) 與上櫃 (TPEx) 的最新重大訊息
+            res_twse = self.session.get("https://openapi.twse.com.tw/v1/opendata/t187ap04_L", timeout=10)
+            res_tpex = self.session.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O", timeout=10)
+            
+            mops_data = []
+            if res_twse.status_code == 200: mops_data.extend(res_twse.json())
+            if res_tpex.status_code == 200: mops_data.extend(res_tpex.json())
+            
+            for item in mops_data:
+                code = item.get("公司代號", item.get("SecuritiesCompanyCode", ""))
+                if code in core_tickers:
+                    date_str = item.get("發言日期", "")
+                    time_str = item.get("發言時間", "")
+                    title = item.get("主旨", "")
+                    
+                    official_html += f"<li><b>[{core_tickers[code]} {code}]</b> {date_str} {time_str} - {title}</li>"
+                    official_text_for_ai += f"[{core_tickers[code]} {code}] {date_str} {title}\n"
+                    has_official = True
+        except Exception as e:
+            print(f"重大訊息抓取失敗: {e}")
+            
+        official_html += "</ul>"
+        if not has_official:
+            official_html = "<h3 style='margin-top: 20px;'>🏛️ 官方重大訊息公告</h3><p style='font-size: 13px;'>近期暫無官方重大訊息。</p>"
+            official_text_for_ai = "無官方重大公告。"
+
+        # 3. 呼叫 Gemini 進行綜合交叉比對
         ai_html = ""
         if GEMINI_API_KEY:
             print("🤖 正在呼叫 Gemini API 撰寫今日盤後分析...")
@@ -331,17 +361,22 @@ class TaiwanMarketTracker:
                 genai.configure(api_key=GEMINI_API_KEY)
                 model = genai.GenerativeModel('gemini-1.5-flash')
                 
-                # 將 dataframe 轉成字串提供給模型 (去除掉不需要提供給 AI 的網頁 HTML 碼)
                 ai_df = df[['名稱', '現價', '狀態', '估值法']].copy()
                 
+                # 提示詞升級：要求嚴格比對官方公告與媒體報導
                 prompt = f"""
-                你是一位量化投資經理。請根據以下「今日投資組合狀態」與「最新市場新聞」，寫出大約 250 字的每日重點分析與操作建議。
-                語氣要冷靜、客觀、紀律嚴明。不要寒暄，直接以條列式給出洞察重點（例如：針對半導體、金融、記憶體的折溢價與新聞關聯做解讀）。
+                你是一位量化投資經理。請根據以下「今日投資組合估值狀態」、「官方重大公告」與「媒體最新新聞」，寫出大約 250 字的每日重點分析與操作建議。
+                語氣要冷靜、客觀、紀律嚴明。不要寒暄，直接以條列式給出洞察重點。
                 
-                【今日估值狀態】
+                特別指令：若「官方重大公告」與「媒體新聞」描述同一事件（例如營收開出 vs 媒體預測），請進行交叉比對，判斷市場情緒是否過度反應或忽略了事實。
+                
+                【今日估值狀態 (折溢價燈號)】
                 {ai_df.to_string(index=False)}
                 
-                【今日最新新聞 (僅列出有動態的標的)】
+                【官方重大公告 (公開資訊觀測站之絕對事實)】
+                {official_text_for_ai}
+                
+                【媒體最新新聞 (市場情緒與預期)】
                 {news_text_for_ai}
                 """
                 response = model.generate_content(prompt)
@@ -349,13 +384,13 @@ class TaiwanMarketTracker:
             except Exception as e:
                 print(f"Gemini API 呼叫失敗: {e}")
         
-        return news_html, ai_html
+        return official_html, news_html, ai_html
 
     def send_email_notify(self, df, today_str):
         if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return
         
-        # 取得動態新聞與 AI 評估
-        news_html, ai_html = self.get_news_and_analysis(df)
+        # 接收三項回傳值
+        official_html, news_html, ai_html = self.get_news_and_analysis(df)
 
         msg = MIMEMultipart('related')
         msg['Subject'] = f"📊 【投資組合動態追蹤】 {today_str}"
@@ -405,6 +440,7 @@ class TaiwanMarketTracker:
 
         html += f'''</table>
             <img src="cid:valuation_chart" style="max-width: 100%; border: 1px solid #eee; border-radius: 5px;">
+            {official_html}
             {news_html}
             </body></html>'''
 
