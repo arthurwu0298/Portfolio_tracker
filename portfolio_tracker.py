@@ -282,15 +282,15 @@ class TaiwanMarketTracker:
         plt.savefig(CHART_FILE, dpi=120)
         plt.close()
 
-    # --- 新增：動態抓取官方公告與媒體新聞，交由 AI 智慧摘要 ---
+    # --- 最終穩定版：無時間限制，永遠抓取最新動態並由 AI 排版 ---
     def get_news_and_analysis(self, df):
         print("📰 正在動態抓取投資組合標的最新官方公告與媒體新聞...")
         
         core_tickers = {item["code"]: item["name"] for item in PORTFOLIO}
         
-        # 1. 抓取 Yahoo 媒體新聞
+        # 1. 抓取 Yahoo 媒體新聞 (移除 3 天限制，直接取最新)
         news_text_for_ai = ""
-        fallback_news_html = "<h3 style='margin-top: 30px;'>📰 媒體最新市場消息 (近3日)</h3><ul style='font-size: 13px; line-height: 1.6;'>"
+        fallback_news_html = "<h3 style='margin-top: 30px;'>📰 媒體最新市場消息</h3><ul style='font-size: 13px; line-height: 1.6;'>"
         has_news = False
         
         for code, name in core_tickers.items():
@@ -301,24 +301,23 @@ class TaiwanMarketTracker:
                     ticker_news_count = 0
                     for n in news:
                         pub_time = datetime.fromtimestamp(n['providerPublishTime'])
-                        if datetime.now() - pub_time < timedelta(days=3):
-                            pub_time_str = pub_time.strftime('%Y-%m-%d')
-                            title = n['title']
-                            link = n['link']
-                            
-                            fallback_news_html += f"<li><b>[{name} {code}]</b> {pub_time_str} - <a href='{link}'>{title}</a></li>"
-                            news_text_for_ai += f"[{name} {code}] {title}\n"
-                            
-                            ticker_news_count += 1
-                            if ticker_news_count >= 2: break
+                        pub_time_str = pub_time.strftime('%Y-%m-%d')
+                        title = n['title']
+                        link = n['link']
+                        
+                        fallback_news_html += f"<li><b>[{name} {code}]</b> {pub_time_str} - <a href='{link}'>{title}</a></li>"
+                        news_text_for_ai += f"[{name} {code}] {title}\n"
+                        
+                        ticker_news_count += 1
+                        if ticker_news_count >= 2: break  # 確保每檔股票最多只取最新的 2 則
                     if ticker_news_count > 0: has_news = True
             except Exception:
                 pass
                 
         fallback_news_html += "</ul>"
         if not has_news:
-            fallback_news_html = "<h3 style='margin-top: 30px;'>📰 媒體最新市場消息</h3><p style='font-size: 13px;'>近 3 日暫無重大新聞。</p>"
-            news_text_for_ai = "今日暫無重大媒體新聞。"
+            fallback_news_html = "<h3 style='margin-top: 30px;'>📰 媒體最新市場消息</h3><p style='font-size: 13px;'>近期暫無重大新聞。</p>"
+            news_text_for_ai = "近期暫無重大媒體新聞。"
 
         # 2. 抓取公開資訊觀測站 (保留完整文字給 AI 判讀)
         official_text_for_ai = ""
@@ -333,7 +332,6 @@ class TaiwanMarketTracker:
             if res_twse.status_code == 200: mops_data.extend(res_twse.json())
             if res_tpex.status_code == 200: mops_data.extend(res_tpex.json())
             
-            # 確保照時間新到舊排序
             def get_sort_key(item):
                 return str(item.get("發言日期", item.get("SpokeDate", ""))) + str(item.get("發言時間", item.get("SpokeTime", "")))
             mops_data.sort(key=get_sort_key, reverse=True)
@@ -344,17 +342,13 @@ class TaiwanMarketTracker:
                 code = str(item.get("公司代號", item.get("SecuritiesCompanyCode", "")))
                 if code in core_tickers and official_news_count[code] < 2:
                     date_str = str(item.get("發言日期", item.get("SpokeDate", "")))
-                    # 新增：抓取發言時間
                     time_str = str(item.get("發言時間", item.get("SpokeTime", "")))
                     
-                    # 把所有的欄位內容串起來，不截斷，讓 AI 擁有完整上下文去判斷重點
                     raw_content = " ".join([str(v) for k, v in item.items() if k not in ["公司代號", "SecuritiesCompanyCode", "符合條款", "事實發生日"]])
                     if len(raw_content) > 500: raw_content = raw_content[:500] 
                     
-                    # 將時間一併加入給 AI 判讀的字串中
                     official_text_for_ai += f"[{core_tickers[code]} {code}] 日期: {date_str} 時間: {time_str} 內容: {raw_content}\n"
                     
-                    # 這是預防 API 失效的備用字串
                     clean_raw = raw_content.replace("\n", " ").replace("\r", "")
                     if len(clean_raw) > 80: clean_raw = clean_raw[:80] + "..."
                     fallback_official_html += f"<li><b>[{core_tickers[code]} {code}]</b> {date_str} {time_str} - {clean_raw}</li>"
@@ -369,58 +363,57 @@ class TaiwanMarketTracker:
             fallback_official_html = "<h3 style='margin-top: 20px;'>🏛️ 官方重大訊息公告</h3><p style='font-size: 13px;'>近期暫無官方重大訊息。</p>"
             official_text_for_ai = "無官方重大公告。"
 
-        # 3. 呼叫 Gemini 進行「去蕪存菁」與「盤後分析」
-        final_html = ""
+        # 3. 呼叫 Gemini 強制輸出三大段落格式
         if GEMINI_API_KEY:
-            print("🤖 正在呼叫 Gemini API 提煉重訊重點並撰寫盤後分析...")
+            print("🤖 正在呼叫 Gemini API 撰寫三大段落盤後報告...")
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
-                # model = genai.GenerativeModel('gemini-1.5-flash') 
+                
                 model = genai.GenerativeModel('gemini-flash-latest')
+                
                 safety_settings = [
-                    {
-                        "category": "HARM_CATEGORY_HARASSMENT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_NONE"
-                    }
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
                 ]
-                ai_df = df[['名稱', '現價', '狀態', '估值法']].copy()
                 
-                # 提示詞微調：要求輸出格式加上「時間」
+                ai_df = df[['名稱', '現價', '便宜價', '合理價', '目標價', '狀態']].copy()
+                today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
+                
                 prompt = f"""
-                你是一位量化投資經理與專業財經編輯。我會給你「今日估值狀態」、「原始官方公告」與「媒體新聞」。
+                你是一位量化投資分析交易經理。請根據以下「今日估值狀態」、「原始官方公告」與「媒體新聞」，最新最即時投資組合,AI相關台股,台股金融業重點分析並撰寫專屬我的盤後報告。
                 
-                【重要任務】：
-                官方公告中充滿了無意義的表單填寫指示（例如：「人員變動別（請輸入發言人、代理發言人...）」或「如坐落台中市北區...」）。
-                請你直接略過這些廢話，幫我提煉出公告真正的「核心重點」（例如：玉山金更換財務主管為XXX、台積電宣告每股配息7元），並濃縮成一句話。
-                
-                請直接輸出以下 HTML 格式的字串，不要包含 ```html 等 Markdown 語法，直接輸出乾淨的 HTML 標籤即可：
-                
-                <h3 style='margin-top: 20px;'>🏛️ 官方重大訊息公告 (AI 重點摘要)</h3>
-                <ul style='font-size: 13px; line-height: 1.6;'>
-                  <!-- 輸出你提煉後的官方公告，格式：<li><b>[名稱 代碼]</b> 日期 時間 - 你的重點摘要</li> -->
-                </ul>
-                
-                <h3 style='margin-top: 30px;'>📰 媒體最新市場消息 (近3日)</h3>
-                <ul style='font-size: 13px; line-height: 1.6;'>
-                  <!-- 輸出媒體新聞，如果沒有就寫無 -->
-                </ul>
-                
-                <h3>🤖 系統自動化盤後評估</h3>
-                <div style='background-color: #f4f8fb; padding: 15px; border-left: 4px solid #0056b3; font-size: 13px; line-height: 1.6;'>
-                  <!-- 綜合上述消息與估值狀態，寫出約 250 字的盤後條列式客觀分析 -->
+                【絕對輸出格式要求】
+                架構必須完全依照下方範本，一字不差地套用這個結構：
+
+                <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
+                  <p style='font-size: 14px; margin-bottom: 20px;'><b>截至 {today_str_for_prompt} 最新盤後，投資組合綜合評估：</b><br>
+                  <!-- 根據大盤趨勢與投資組合整體估值狀態，寫一段約 80 字的總體盤勢摘要 --></p>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 最新即時焦點消息與產業重點分析</h4>
+                  <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
+                    <!-- 結合新聞與重訊，精煉出 3 到 4 點產業與個股消息。請去除無意義的表單廢話。 -->
+                  </ul>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>二、 重點關注個股估價表</h4>
+                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;'>
+                    <tr style='background-color: #e9ecef;'>
+                      <th style='border: 1px solid #ccc; padding: 8px;'>標的</th>
+                      <th style='border: 1px solid #ccc; padding: 8px;'>現價</th>
+                      <th style='border: 1px solid #ccc; padding: 8px;'>便宜價</th>
+                      <th style='border: 1px solid #ccc; padding: 8px;'>合理價</th>
+                      <th style='border: 1px solid #ccc; padding: 8px;'>昂貴(目標)價</th>
+                      <th style='border: 1px solid #ccc; padding: 8px;'>當前狀態</th>
+                    </tr>
+                    <!-- 將【今日估值狀態】的每一檔標的填入表格的 <tr> <td> 中 -->
+                  </table>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>三、 核心個股操作建議與評估</h4>
+                  <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
+                    <!-- 針對狀態為「達標(停利)」、「便宜(加碼)」或有重大新聞的標的，給出具體的操作建議與防守點位 -->
+                  </ul>
                 </div>
                 
                 【今日估值狀態】
@@ -431,19 +424,23 @@ class TaiwanMarketTracker:
                 
                 【媒體新聞】
                 {news_text_for_ai}
-                【極度重要】：你必須直接輸出乾淨的 HTML 程式碼，絕對不要使用任何 Markdown 語法（例如 ```html ），也不要加上任何多餘的解釋或開場白。直接從 <h3...> 開始輸出。
+
+                【極度重要】：你必須直接輸出乾淨的 HTML 程式碼，絕對不要使用任何 Markdown 語法（例如 ```html ），也不要加上任何多餘的解釋或開場白。直接從 <div style=...> 開始輸出。
                 """
-                response = model.generate_content(prompt)
+                
+                response = model.generate_content(prompt, safety_settings=safety_settings)
                 final_html = response.text.strip()
                 if final_html.startswith("```html"): final_html = final_html[7:]
                 if final_html.endswith("```"): final_html = final_html[:-3]
+                
+                return final_html
             except Exception as e:
                 print(f"Gemini API 呼叫失敗: {e}")
-                final_html = fallback_official_html + fallback_news_html
+                error_html = f"<div style='background-color: #ffeeba; color: #dc3545; padding: 15px; font-weight: bold; border-radius: 5px; margin-bottom: 20px;'>⚠️ 系統警告：Gemini AI 生成失敗，原因：{e} <br>請檢查 API Key 或 requirements.txt 設定。</div>"
+                return error_html + fallback_official_html + fallback_news_html
         else:
-            final_html = fallback_official_html + fallback_news_html
-            
-        return final_html
+            error_html = "<div style='background-color: #ffeeba; color: #dc3545; padding: 15px; font-weight: bold; border-radius: 5px; margin-bottom: 20px;'>⚠️ 系統警告：未偵測到 GEMINI_API_KEY，請至 GitHub Secrets 設定。</div>"
+            return error_html + fallback_official_html + fallback_news_html
 
     def send_email_notify(self, df, today_str):
         if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return
