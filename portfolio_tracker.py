@@ -376,8 +376,26 @@ class TaiwanMarketTracker:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                
+                # model = genai.GenerativeModel('gemini-1.5-flash') 
+                model = genai.GenerativeModel('gemini-flash-latest')
+                safety_settings = [
+                    {
+                        "category": "HARM_CATEGORY_HARASSMENT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE"
+                    }
+                ]
                 ai_df = df[['名稱', '現價', '狀態', '估值法']].copy()
                 
                 # 提示詞微調：要求輸出格式加上「時間」
@@ -413,6 +431,7 @@ class TaiwanMarketTracker:
                 
                 【媒體新聞】
                 {news_text_for_ai}
+                【極度重要】：你必須直接輸出乾淨的 HTML 程式碼，絕對不要使用任何 Markdown 語法（例如 ```html ），也不要加上任何多餘的解釋或開場白。直接從 <h3...> 開始輸出。
                 """
                 response = model.generate_content(prompt)
                 final_html = response.text.strip()
