@@ -12,9 +12,9 @@ PORTFOLIO = [
     {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 3200, "cost_per_share": 110.0, "valuation_method": "pe"},
     
     # ⚠️ 【修正】南亞科、華邦電、創見改回機械式年化預估 (yield)
-    {"code": "2408", "name": "南亞科", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "is_core": True ,"valuation_method": "yield", "payout_ratio": 0.70, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
-    {"code": "2344", "name": "華邦電", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,"is_core": True , "valuation_method": "yield", "payout_ratio": 0.57, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
-    {"code": "2451", "name": "創見", "market": "TWSE", "shares": 1200, "cost_per_share": 150.0, "is_core": True ,"valuation_method": "yield", "payout_ratio": 0.90, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
+    {"code": "2408", "name": "南亞科", "market": "TWSE", "shares": 0, "cost_per_share": 0.0, "is_core": False ,"valuation_method": "yield", "payout_ratio": 0.70, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
+    {"code": "2344", "name": "華邦電", "market": "TWSE", "shares": 0, "cost_per_share": 0.0,"is_core": False , "valuation_method": "yield", "payout_ratio": 0.57, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
+    {"code": "2451", "name": "創見", "market": "TWSE", "shares": 1200, "cost_per_share": 150.0, "is_core": False ,"valuation_method": "yield", "payout_ratio": 0.90, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
     
     {"code": "2812", "name": "台中銀", "market": "TWSE", "shares": 40000, "cost_per_share": 16.0, "valuation_method": "yield", "payout_ratio": 0.25, "target_yields": {"cheap": 3.0, "fair": 2.2, "target": 1.5}},
     {"code": "2330", "name": "台積電", "market": "TWSE", "shares": 30, "cost_per_share": 1900.0, "valuation_method": "pe"},
