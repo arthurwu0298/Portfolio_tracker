@@ -354,8 +354,13 @@ class TaiwanMarketTracker:
                 {core_data_text}
                 """
                 
-# ⬇️ 替換此處：使用真實模型 + 延長 Timeout + 強化 Deadline 攔截 ⬇️
-                target_models = ['gemini-flash-latest','gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro']
+                # ⬇️ 模型清單更新(2026-09)：gemini-1.5-* 系列已經被Google全面關閉，
+                # 所有請求一律回傳404，留著只是浪費重試次數。gemini-flash-latest
+                # 這種「-latest」別名官方文件明講是指向實驗性模型，正式環境不建議
+                # 使用，速率限制也更嚴格(免費額度可能只有個位數~20次/天)。
+                # 改成明確指定目前still在架、屬於正式版(GA)的機型，優先用便宜的
+                # Flash-Lite顧額度，Flash當備援。
+                target_models = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.6-flash']
                 response = None
                 api_call_count = 0 
 
@@ -378,8 +383,14 @@ class TaiwanMarketTracker:
                                 break
                             except Exception as err:
                                 err_str = str(err).lower()
-                                # 將 deadline 加入攔截條件
-                                if ("429" in err_str or "504" in err_str or "deadline" in err_str) and attempt < 2:
+                                # 修正：「每日額度用完」(429 + per-day/perday) 屬於按天計算的硬限制，
+                                # 等幾十秒重試完全沒用，只會浪費GitHub Actions的執行時間，應該立刻
+                                # 放棄這個模型、切換下一個備援模型，而不是原地重試。
+                                is_daily_quota = "429" in err_str and ("per day" in err_str or "perday" in err_str)
+                                if is_daily_quota:
+                                    print(f"⚠️ {model_name} 每日額度已用完(非暫時性限制)，直接切換下一個備援模型...")
+                                    raise err
+                                elif ("429" in err_str or "504" in err_str or "deadline" in err_str) and attempt < 2:
                                     wait_seconds = 25 * (attempt + 1)
                                     print(f"⚠️ 觸發伺服器限制或超時 ({err})，等待 {wait_seconds} 秒後重試...")
                                     time.sleep(wait_seconds)
