@@ -309,6 +309,7 @@ class TaiwanMarketTracker:
                 # ⬇️ 替換此處：雙模型輪詢 + 429 退避重試 ⬇️
                 target_models = ['gemini-flash-latest', 'gemini-3.8-flash','gemini-2.5-flash' ,'gemini-1.5-flash']
                 response = None
+                api_call_count = 0  # 新增：初始化總呼叫計數器
 
                 for model_name in target_models:
                     try:
@@ -316,7 +317,10 @@ class TaiwanMarketTracker:
                         model = genai.GenerativeModel(model_name)
                         for attempt in range(3):
                             try:
+                                api_call_count += 1  # 新增：每次送出請求前 +1
+                                print(f"➡️ 正在發送第 {api_call_count} 次 API 請求 (目標模型: {model_name}, 重試次數: {attempt})...")
                                 response = model.generate_content(prompt, safety_settings=safety_settings)
+                                print(f"✅ API 請求成功！本次排程總共消耗了 {api_call_count} 次 API 額度。")
                                 break
                             except Exception as err:
                                 if "429" in str(err) and attempt < 2:
@@ -328,13 +332,14 @@ class TaiwanMarketTracker:
                         if response:
                             break
                     except Exception as model_err:
-                        if "404" in str(model_err):
-                            print(f"⚠️ 模型 {model_name} 不支援 (404)，嘗試下一個模型...")
+                        # 同時把 429 加入切換條件中
+                        if "404" in str(model_err) or "429" in str(model_err):
+                            print(f"⚠️ 模型 {model_name} 無法使用 (404 找不到 或 429 額度用盡)，嘗試切換下一個備援模型...")
                             continue
                         raise model_err
 
                 if not response:
-                    raise Exception("所有可用模型皆無法產生內容。")
+                    raise Exception(f"所有可用模型皆無法產生內容。總共嘗試呼叫了 {api_call_count} 次 API。")
 
                 final_html = response.text.strip()
                 if final_html.startswith("```html"): final_html = final_html[7:]
