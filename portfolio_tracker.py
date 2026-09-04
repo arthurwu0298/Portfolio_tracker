@@ -244,8 +244,8 @@ class TaiwanMarketTracker:
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
                 
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                #model = genai.GenerativeModel('gemini-flash-latest')
+                #model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                model = genai.GenerativeModel('gemini-flash-latest')
                 
                 safety_settings = [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -267,7 +267,7 @@ class TaiwanMarketTracker:
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
                   <p style='font-size: 14px; margin-bottom: 20px;'><b>截至 {today_str_for_prompt} 最新盤後，投資組合綜合評估：</b><br>
-                  <!-- 根據大盤趨勢與投資組合整體估值狀態，寫一段約 80 字的總體盤勢摘要 --></p>
+                  <!-- 根據大盤趨勢與投資組合整體估值狀態，寫一段約 100 字的總體盤勢摘要 --></p>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 最新即時焦點消息與產業重點分析</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
@@ -284,7 +284,7 @@ class TaiwanMarketTracker:
                       <th style='border: 1px solid #ccc; padding: 8px;'>昂貴(目標)價</th>
                       <th style='border: 1px solid #ccc; padding: 8px;'>當前狀態</th>
                     </tr>
-                    <!-- 根據你作為量化經理的專業判斷，參考提供的原始數據，直接在這裡生成每檔標的的表格內容。必須填寫明確的數字與狀態，不要留空！ -->
+                    <!-- 根據你作為量化經理與財經分析交易員和專業財經主編的專業判斷，參考提供的原始數據，直接在這裡生成每檔標的的表格內容。必須填寫明確的數字與狀態，不要留空！ -->
                   </table>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>三、 核心個股操作建議與評估</h4>
