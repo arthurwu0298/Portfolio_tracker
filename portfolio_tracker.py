@@ -241,11 +241,12 @@ class TaiwanMarketTracker:
         if GEMINI_API_KEY:
             print("🤖 正在呼叫 Gemini API 進行估值計算與報告撰寫...")
             try:
+                import time
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
                 
-                #model = genai.GenerativeModel('gemini-1.5-flash-latest')
-                model = genai.GenerativeModel('gemini-flash-latest')
+                model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                #model = genai.GenerativeModel('gemini-flash-latest')
                 
                 safety_settings = [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -305,7 +306,20 @@ class TaiwanMarketTracker:
                 【極度重要】：你必須直接輸出乾淨的 HTML 程式碼，絕對不要使用任何 Markdown 語法（例如 ```html ），也不要加上任何多餘的解釋或開場白。直接從 <div style=...> 開始輸出。
                 """
                 
-                response = model.generate_content(prompt, safety_settings=safety_settings)
+                # 實作 3 次退避重試機制
+                response = None
+                for attempt in range(3):
+                    try:
+                        response = model.generate_content(prompt, safety_settings=safety_settings)
+                        break
+                    except Exception as err:
+                        if "429" in str(err) and attempt < 2:
+                            wait_seconds = 25 * (attempt + 1)
+                            print(f"⚠️ 觸發頻率限制 (429)，等待 {wait_seconds} 秒後重試...")
+                            time.sleep(wait_seconds)
+                        else:
+                            raise err
+                
                 final_html = response.text.strip()
                 if final_html.startswith("```html"): final_html = final_html[7:]
                 if final_html.endswith("```"): final_html = final_html[:-3]
