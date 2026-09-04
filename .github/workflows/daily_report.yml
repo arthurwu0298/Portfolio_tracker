@@ -5,9 +5,9 @@ on:
     - cron: '55 22 * * 1-5'
   workflow_dispatch:
 
-  concurrency:
-    group: portfolio-tracker-run
-    cancel-in-progress: true  
+concurrency:
+  group: portfolio-tracker-run
+  cancel-in-progress: true
 
 jobs:
   build:
