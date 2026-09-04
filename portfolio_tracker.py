@@ -243,7 +243,9 @@ class TaiwanMarketTracker:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
-                model = genai.GenerativeModel('gemini-flash-latest')
+                
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                #model = genai.GenerativeModel('gemini-flash-latest')
                 
                 safety_settings = [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
