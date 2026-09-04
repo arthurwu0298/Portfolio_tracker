@@ -5,13 +5,11 @@ import sqlite3
 import requests
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta  # 新增：用於精準計算 KD、RSI 等技術指標
-import matplotlib.pyplot as plt
+import pandas_ta as ta  
 from datetime import datetime, timedelta
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
 
 from portfolio_config import (
     PORTFOLIO, CASH_RESERVE, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, FINMIND_TOKEN
@@ -19,7 +17,6 @@ from portfolio_config import (
 from valuation_engine import FinMindValuationEngine
 
 DB_FILE = "portfolio_history.db"
-TREND_CHART_FILE = "trend_chart.png"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
@@ -153,13 +150,11 @@ class TaiwanMarketTracker:
             })
 
         self.save_to_db(total_cost, total_mkt, total_mkt + CASH_RESERVE, CASH_RESERVE, total_mkt - total_cost, round(((total_mkt - total_cost) / total_cost) * 100, 2) if total_cost > 0 else 0)
-        self.plot_historical_trend()
         return pd.DataFrame(records)
 
     def fetch_advanced_quant_data(self):
         print("🔍 [階段二] 掃描核心持股 (is_core=True) 並抓取深度量化/籌碼數據...")
         core_data = {}
-        # 設定抓取近期範圍，確保能涵蓋到最新交易日
         start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         
         for item in PORTFOLIO:
@@ -171,7 +166,6 @@ class TaiwanMarketTracker:
             print(f"  -> 處理核心標的: {ticker_name} ({c})")
             quant_info = {"name": ticker_name, "code": c}
             
-            # 1. 技術面與動能 (使用 yfinance + pandas_ta)
             try:
                 yf_ticker = f"{c}.TW" if item["market"] == "TWSE" else f"{c}.TWO"
                 hist = yf.Ticker(yf_ticker).history(period="3mo")
@@ -190,10 +184,8 @@ class TaiwanMarketTracker:
             except Exception as e:
                 quant_info["技術面抓取異常"] = str(e)
 
-            # 2. 法人與信用籌碼 (使用 FinMind)
             if FINMIND_TOKEN:
                 try:
-                    # 抓取三大法人買賣超
                     res_inst = requests.get(
                         "https://api.finmindtrade.com/api/v4/data",
                         params={"dataset": "InstitutionalInvestorsBuySell", "data_id": c, "start_date": start_date, "token": FINMIND_TOKEN},
@@ -204,7 +196,6 @@ class TaiwanMarketTracker:
                         latest_date = df_inst['date'].max()
                         latest_inst = df_inst[df_inst['date'] == latest_date]
                         net_buy = latest_inst.groupby('name')['buy_sell'].sum().to_dict()
-                        # 處理不同券商命名差異
                         foreign = net_buy.get('外資及陸資投資', net_buy.get('外資及陸資(不含外資自營商)', 0))
                         trust = net_buy.get('投信', 0)
                         quant_info["三大法人最新動向日期"] = latest_date
@@ -214,7 +205,6 @@ class TaiwanMarketTracker:
                     self.fetch_errors.append(f"{ticker_name} 法人籌碼抓取失敗: {e}")
 
                 try:
-                    # 抓取融資券餘額
                     res_margin = requests.get(
                         "https://api.finmindtrade.com/api/v4/data",
                         params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": c, "start_date": start_date, "token": FINMIND_TOKEN},
@@ -229,7 +219,7 @@ class TaiwanMarketTracker:
                     self.fetch_errors.append(f"{ticker_name} 融資券抓取失敗: {e}")
 
             core_data[c] = quant_info
-            time.sleep(1.5) # 降低 FinMind 請求頻率避免被鎖
+            time.sleep(1.5)
 
         return core_data
 
@@ -240,53 +230,10 @@ class TaiwanMarketTracker:
         conn.commit()
         conn.close()
 
-    def plot_historical_trend(self):
-        print("📊 繪製走勢對比圖 (前五大強勢股 vs 大盤基準)...")
-        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'Microsoft JhengHei', 'sans-serif']
-        plt.rcParams['axes.unicode_minus'] = False
-        
-        df_plot = pd.DataFrame()
-        for item in PORTFOLIO:
-            tkr = f"{item['code']}.TW" if item['market'] == "TWSE" else f"{item['code']}.TWO"
-            try:
-                hist = yf.Ticker(tkr).history(period="6mo")
-                if not hist.empty and len(hist) > 10:
-                    base_price = hist['Close'].iloc[0]
-                    # 計算累積報酬率
-                    df_plot[item['name']] = (hist['Close'] / base_price - 1) * 100
-            except Exception as e:
-                print(f"抓取 {item['name']} 歷史資料失敗: {e}")
-                
-        if not df_plot.empty:
-            # 取得最後一天報酬並排序，篩選出最強 5 檔與 0050 基準
-            final_returns = df_plot.iloc[-1].sort_values(ascending=False)
-            benchmark = next((col for col in df_plot.columns if '0050' in col), None)
-            top_5 = [name for name in final_returns.index if name != benchmark][:5]
-            plot_targets = top_5 + ([benchmark] if benchmark else [])
-
-            plt.figure(figsize=(10, 6))
-            for column in plot_targets:
-                if column == benchmark:
-                    plt.plot(df_plot.index, df_plot[column], label=f"基準 ({column})", linewidth=3.0, color='#d62728', linestyle='-')
-                else:
-                    plt.plot(df_plot.index, df_plot[column], label=column, linewidth=1.5, alpha=0.85)
-                    
-            plt.title('投資組合動能最強 Top 5 vs 大盤基準 (近半年累積報酬率 %)', fontsize=15, fontweight='bold', pad=15)
-            plt.xlabel('日期', fontsize=12)
-            plt.ylabel('累積報酬率 (%)', fontsize=12)
-            plt.axhline(0, color='black', linewidth=1.2, linestyle='--')
-            
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10)
-            plt.grid(axis='y', linestyle='--', alpha=0.5)
-            plt.tight_layout()
-            plt.savefig(TREND_CHART_FILE, dpi=120)
-            plt.close()
-
     def get_news_and_analysis(self, df_basic, core_data_dict):
         print("📰 [階段三] 抓取官方公告與媒體新聞，啟動 AI 雙層分析...")
         core_tickers = {item["code"]: item["name"] for item in PORTFOLIO}
         
-        # 抓取新聞與重訊 (維持原有邏輯)
         news_text_for_ai = ""
         for code, name in core_tickers.items():
             try:
@@ -325,7 +272,6 @@ class TaiwanMarketTracker:
         except Exception as e: print(f"重大訊息抓取失敗: {e}")
         if not official_text_for_ai: official_text_for_ai = "無官方重大公告。"
 
-        # 整理核心股量化數據字串供 AI 推演
         core_data_text = ""
         if core_data_dict:
             for code, data in core_data_dict.items():
@@ -352,7 +298,7 @@ class TaiwanMarketTracker:
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
                 prompt = f"""
-                你是一位頂尖的量化投資經理與實戰交易員。請根據提供的「基礎全景數據」與「核心股深度量化籌碼」，產出專屬的雙層盤後決策報告。
+                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專家。請根據提供的「基礎全景數據」與「核心股深度量化籌碼」，產出專屬的雙層盤後決策報告。
                 
                 【絕對輸出格式要求】
                 請嚴格依照下方 HTML 與文字結構輸出，不要使用 markdown 語法 (```html) 包裝，直接輸出 HTML：
@@ -408,8 +354,8 @@ class TaiwanMarketTracker:
                 {core_data_text}
                 """
                 
-                # 雙模型輪詢 + 重試機制
-                target_models = ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-1.5-flash']
+# ⬇️ 替換此處：使用真實模型 + 延長 Timeout + 強化 Deadline 攔截 ⬇️
+                target_models = ['gemini-flash-latest','gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro']
                 response = None
                 api_call_count = 0 
 
@@ -421,21 +367,30 @@ class TaiwanMarketTracker:
                             try:
                                 api_call_count += 1
                                 print(f"➡️ 正在發送第 {api_call_count} 次 API 請求 (目標模型: {model_name}, 重試次數: {attempt})...")
-                                response = model.generate_content(prompt, safety_settings=safety_settings)
+                                
+                                # 關鍵修正：加入 request_options 延長等待時間至 150 秒，避免 504 Deadline
+                                response = model.generate_content(
+                                    prompt, 
+                                    safety_settings=safety_settings,
+                                    request_options={"timeout": 150} 
+                                )
                                 print(f"✅ API 請求成功！本次排程總共消耗了 {api_call_count} 次 API 額度。")
                                 break
                             except Exception as err:
-                                if "429" in str(err) and attempt < 2:
+                                err_str = str(err).lower()
+                                # 將 deadline 加入攔截條件
+                                if ("429" in err_str or "504" in err_str or "deadline" in err_str) and attempt < 2:
                                     wait_seconds = 25 * (attempt + 1)
-                                    print(f"⚠️ 觸發頻率限制 (429)，等待 {wait_seconds} 秒後重試...")
+                                    print(f"⚠️ 觸發伺服器限制或超時 ({err})，等待 {wait_seconds} 秒後重試...")
                                     time.sleep(wait_seconds)
                                 else:
                                     raise err
                         if response:
                             break
                     except Exception as model_err:
-                        if "404" in str(model_err) or "429" in str(model_err):
-                            print(f"⚠️ 模型 {model_name} 無法使用 (404/429)，嘗試切換下一個備援模型...")
+                        err_str = str(model_err).lower()
+                        if "404" in err_str or "429" in err_str or "504" in err_str or "deadline" in err_str:
+                            print(f"⚠️ 模型 {model_name} 發生異常，嘗試切換下一個備援模型...")
                             continue
                         raise model_err
 
@@ -471,21 +426,12 @@ class TaiwanMarketTracker:
           <h2>📈 AI 投資組合動態儀表板 ({today_str})</h2>
           {error_banner}
           {analysis_html}
-          <div style="margin-top: 30px; text-align: center;">
-            <img src="cid:trend_chart" style="max-width: 100%; border: 1px solid #eee; border-radius: 8px; padding: 10px; background-color: #fff;">
-          </div>
         </body></html>
         '''
 
         msg_alternative = MIMEMultipart('alternative')
         msg.attach(msg_alternative)
         msg_alternative.attach(MIMEText(html, 'html'))
-        
-        if os.path.exists(TREND_CHART_FILE):
-            with open(TREND_CHART_FILE, 'rb') as f:
-                img = MIMEImage(f.read())
-                img.add_header('Content-ID', '<trend_chart>')
-                msg.attach(img)
                 
         try:
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
