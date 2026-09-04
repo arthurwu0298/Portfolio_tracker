@@ -4,4 +4,4 @@ matplotlib
 numpy
 yfinance
 google-generativeai
-pandas_ta
+pandas-ta
