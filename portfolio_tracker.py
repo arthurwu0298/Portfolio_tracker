@@ -245,7 +245,7 @@ class TaiwanMarketTracker:
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
                 
-                model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                #model = genai.GenerativeModel('gemini-1.5-flash-latest')
                 #model = genai.GenerativeModel('gemini-flash-latest')
                 
                 safety_settings = [
@@ -306,20 +306,36 @@ class TaiwanMarketTracker:
                 【極度重要】：你必須直接輸出乾淨的 HTML 程式碼，絕對不要使用任何 Markdown 語法（例如 ```html ），也不要加上任何多餘的解釋或開場白。直接從 <div style=...> 開始輸出。
                 """
                 
-                # 實作 3 次退避重試機制
+                # ⬇️ 替換此處：雙模型輪詢 + 429 退避重試 ⬇️
+                target_models = ['gemini-flash-latest', 'gemini-3.8-flash','gemini-2.5-flash' ,'gemini-1.5-flash']
                 response = None
-                for attempt in range(3):
+
+                for model_name in target_models:
                     try:
-                        response = model.generate_content(prompt, safety_settings=safety_settings)
-                        break
-                    except Exception as err:
-                        if "429" in str(err) and attempt < 2:
-                            wait_seconds = 25 * (attempt + 1)
-                            print(f"⚠️ 觸發頻率限制 (429)，等待 {wait_seconds} 秒後重試...")
-                            time.sleep(wait_seconds)
-                        else:
-                            raise err
-                
+                        print(f"嘗試使用模型: {model_name}...")
+                        model = genai.GenerativeModel(model_name)
+                        for attempt in range(3):
+                            try:
+                                response = model.generate_content(prompt, safety_settings=safety_settings)
+                                break
+                            except Exception as err:
+                                if "429" in str(err) and attempt < 2:
+                                    wait_seconds = 25 * (attempt + 1)
+                                    print(f"⚠️ 觸發頻率限制 (429)，等待 {wait_seconds} 秒後重試...")
+                                    time.sleep(wait_seconds)
+                                else:
+                                    raise err
+                        if response:
+                            break
+                    except Exception as model_err:
+                        if "404" in str(model_err):
+                            print(f"⚠️ 模型 {model_name} 不支援 (404)，嘗試下一個模型...")
+                            continue
+                        raise model_err
+
+                if not response:
+                    raise Exception("所有可用模型皆無法產生內容。")
+
                 final_html = response.text.strip()
                 if final_html.startswith("```html"): final_html = final_html[7:]
                 if final_html.endswith("```"): final_html = final_html[:-3]
@@ -328,8 +344,6 @@ class TaiwanMarketTracker:
             except Exception as e:
                 print(f"Gemini API 呼叫失敗: {e}")
                 return f"<div style='background-color: #ffeeba; color: #dc3545; padding: 15px; font-weight: bold; border-radius: 5px; margin-bottom: 20px;'>⚠️ 系統警告：Gemini AI 生成失敗，原因：{e} <br>由於目前所有估值與報告皆由 AI 生成，API 連線失敗時無法提供報表。請稍後重試。</div>"
-        else:
-            return "<div style='background-color: #ffeeba; color: #dc3545; padding: 15px; font-weight: bold; border-radius: 5px; margin-bottom: 20px;'>⚠️ 系統警告：未偵測到 GEMINI_API_KEY，請至 GitHub Secrets 設定。</div>"
 
     def send_email_notify(self, df, today_str):
         if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return
