@@ -298,7 +298,7 @@ class TaiwanMarketTracker:
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
                 prompt = f"""
-                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專家。請根據提供的「基礎全景數據」與「核心股深度量化籌碼」，產出專屬的雙層盤後決策報告。
+                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專家。請根據提供的「基礎全景數據」與「核心股深度量化籌碼」，提供「官方公告」與「媒體新聞」，請根據上述資訊，提供最新最即時投資組合,AI相關台股,台股金融業重點分析並撰寫專屬我的盤後報告，產出專屬的雙層盤後決策報告。
                 
                 【絕對輸出格式要求】
                 請嚴格依照下方 HTML 與文字結構輸出，不要使用 markdown 語法 (```html) 包裝，直接輸出 HTML：
@@ -319,7 +319,10 @@ class TaiwanMarketTracker:
                     </tr>
                     <!-- 根據【基礎全景數據】生成所有標的表格。必須填寫明確估算數字與狀態(如: 便宜加碼、合理續抱、偏高留意) -->
                   </table>
-
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 最新即時焦點消息與產業重點分析</h4>
+                  <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
+                    <!-- 結合新聞與重訊，精煉出 3 到 4 點產業與個股消息。請去除無意義的表單廢話。 -->
+                  </ul>
                   <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>二、 核心持股深度多空決策矩陣</h4>
                   <!-- 針對每一檔【核心股深度量化籌碼】裡的股票，重複以下結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
