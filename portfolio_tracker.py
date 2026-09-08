@@ -399,6 +399,13 @@ class TaiwanMarketTracker:
             time.sleep(1.5)
 
         return core_data
+    
+    def save_to_db(self, tc, tm, tnw, cash, pl, ret):
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''INSERT OR REPLACE INTO history (date, total_cost, total_mkt, total_net_worth, cash_reserve, unrealized_pl, return_rate) VALUES (?, ?, ?, ?, ?, ?, ?)''', (datetime.now().strftime("%Y-%m-%d"), tc, tm, tnw, cash, pl, ret))
+        conn.commit()
+        conn.close()
 
     def get_news_and_analysis(self, df_basic, core_data_dict):
         print("📰 [階段三] 抓取官方公告與媒體新聞，啟動 AI 雙層分析...")
