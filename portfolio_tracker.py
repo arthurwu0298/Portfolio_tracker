@@ -292,16 +292,12 @@ class TaiwanMarketTracker:
                             score = 100 if days >= 3 else 80 if days > 0 else 50 if days == 0 else 20 if days > -3 else 0
                             return curr_net, days, score
 
-                        f_net1, f_days1, _ = get_trend('外資及陸資投資')
-                        f_net2, f_days2, _ = get_trend('外資及陸資(不含外資自營商)')
-                        f_net = f_net1 if f_net1 != 0 else f_net2
-                        f_cons = f_days1 if f_days1 != 0 else f_days2
-                        f_score = 100 if f_cons >= 3 else 80 if f_cons > 0 else 50 if f_cons == 0 else 20 if f_cons > -3 else 0
+                        # 🚀 關鍵修復：改用 FinMind 原生英文鍵值
+                        f_net, f_cons, f_score = get_trend('Foreign_Investor')
+                        t_net, t_cons, t_score = get_trend('Investment_Trust')
                         
-                        t_net, t_cons, t_score = get_trend('投信')
-                        
-                        d_self, d_days_s, _ = get_trend('自營商(自行買賣)')
-                        d_hedg, d_days_h, _ = get_trend('自營商(避險)')
+                        d_self, d_days_s, _ = get_trend('Dealer_self')
+                        d_hedg, d_days_h, _ = get_trend('Dealer_Hedging')
                         d_net = d_self + d_hedg
                         d_days = d_days_s if d_self != 0 else d_days_h
                         d_score = 90 if d_days >= 2 else 70 if d_days > 0 else 30 if -2 < d_days < 0 else 10 if d_days <= -2 else 50
@@ -334,7 +330,7 @@ class TaiwanMarketTracker:
                     pass
 
                 # ==========================================
-                # 🚀 寫入 V9 籌碼動能計分引擎 (Python 端強制計分)
+                # 🚀 寫入  籌碼動能計分引擎 (Python 端強制計分)
                 # ==========================================
                 cost_dist = ((price - ma20) / ma20 * 100) if ma20 > 0 else 0
                 
@@ -359,10 +355,10 @@ class TaiwanMarketTracker:
                 elif -5 < cost_dist < 0: cost_score = 60
                 
                 retail_score, retail_msg = 0, "無明顯特徵"
-                if chg_pct >= 0 and mg_chg <= 0: retail_score = 100; retail_msg = "籌碼沉澱 (價↑資↓)"
-                elif chg_pct < 0 and mg_chg <= 0: retail_score = 80; retail_msg = "恐慌出場 (價↓資↓)"
-                elif chg_pct < 0 and mg_chg > 0: retail_score = 40; retail_msg = "攤平套牢 (價↓資↑)"
-                elif chg_pct >= 0 and mg_chg > 0: retail_score = 20; retail_msg = "散戶追價 (價↑資↑)"
+                if chg_pct >= 0 and mg_chg <= 0: retail_score = 100; retail_msg = "籌碼沉澱(價↑資↓)"
+                elif chg_pct < 0 and mg_chg <= 0: retail_score = 80; retail_msg = "恐慌出場(價↓資↓)"
+                elif chg_pct < 0 and mg_chg > 0: retail_score = 40; retail_msg = "攤平套牢(價↓資↑)"
+                elif chg_pct >= 0 and mg_chg > 0: retail_score = 20; retail_msg = "散戶追價(價↑資↑)"
                 
                 short_score = 40
                 if sr_ratio > 20: short_score = 100
@@ -389,11 +385,16 @@ class TaiwanMarketTracker:
                 final_chip_score = max(0, final_chip_score - foreign_penalty)
                 chip_status = "✅ 極佳" if final_chip_score >= 81 else "🟢 良好" if final_chip_score >= 61 else "🟡 中性" if final_chip_score >= 41 else "🟠 偏弱" if final_chip_score >= 21 else "🔴 惡化"
                 
-                quant_info["V9籌碼總分"] = f"{final_chip_score}/100 ({chip_status})"
+                quant_info["籌碼總分"] = f"{final_chip_score}/100 ({chip_status})"
                 quant_info["籌碼細項結構"] = f"法人共識度:{contrib['inst']}/30分, 主力雷達:{contrib['radar']}/25分, 均線安全帶:{contrib['cost']}/20分, 散戶動向:{contrib['retail']}/15分, 軋空潛力:{contrib['short']}/10分"
                 quant_info["散戶狀態判定"] = retail_msg
-                quant_info["外資連續動向"] = f"{'連買' if f_cons > 0 else '連賣'} {abs(f_cons)} 日"
-                quant_info["投信連續動向"] = f"{'連買' if t_cons > 0 else '連賣'} {abs(t_cons)} 日"
+                
+                # 修正連賣 0 日的語意防呆
+                f_dir = "連買" if f_cons > 0 else "連賣" if f_cons < 0 else "無連續動向"
+                t_dir = "連買" if t_cons > 0 else "連賣" if t_cons < 0 else "無連續動向"
+                
+                quant_info["外資連續動向"] = f"{f_dir} {abs(f_cons)} 日 (扣分:{foreign_penalty})"
+                quant_info["投信連續動向"] = f"{t_dir} {abs(t_cons)} 日"
 
             core_data[c] = quant_info
             time.sleep(1.5)
