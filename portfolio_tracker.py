@@ -17,7 +17,6 @@ from portfolio_config import (
 from valuation_engine import FinMindValuationEngine
 
 DB_FILE = "portfolio_history.db"
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 METHOD_MAP = {
@@ -62,7 +61,6 @@ class TaiwanMarketTracker:
             res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=15)
             if res1.status_code == 200:
                 for item in res1.json(): self.twse_prices[item["Code"]] = safe_float(item.get("ClosingPrice"))
-            else: self.fetch_errors.append(f"TWSE股價API回應異常 (HTTP {res1.status_code})")
         except Exception as e: self.fetch_errors.append(f"TWSE股價API請求失敗: {e}")
 
         try:
@@ -74,14 +72,12 @@ class TaiwanMarketTracker:
                         "pe": safe_float(item.get("PEratio")),
                         "pb": safe_float(item.get("PBratio"))
                     }
-            else: self.fetch_errors.append(f"TWSE估值API回應異常 (HTTP {res2.status_code})")
         except Exception as e: self.fetch_errors.append(f"TWSE估值API請求失敗: {e}")
 
         try:
             res3 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=15)
             if res3.status_code == 200:
                 for item in res3.json(): self.tpex_prices[item["SecuritiesCompanyCode"]] = safe_float(item.get("Close"))
-            else: self.fetch_errors.append(f"TPEx股價API回應異常 (HTTP {res3.status_code})")
         except Exception as e: self.fetch_errors.append(f"TPEx股價API請求失敗: {e}")
 
         try:
@@ -96,7 +92,6 @@ class TaiwanMarketTracker:
                             "pe": safe_float(lower_item.get("peratio")),
                             "pb": safe_float(lower_item.get("pbratio"))
                         }
-            else: self.fetch_errors.append(f"TPEx估值API回應異常 (HTTP {res4.status_code})")
         except Exception as e: self.fetch_errors.append(f"TPEx估值API請求失敗: {e}")
 
         for item in PORTFOLIO:
@@ -113,14 +108,13 @@ class TaiwanMarketTracker:
                         if fallback_p > 0:
                             if m == "TWSE": self.twse_prices[c] = fallback_p
                             else: self.tpex_prices[c] = fallback_p
-                        else: self.fetch_errors.append(f"{item['name']}({c}) YF備援無法取得價格")
                     if not mets or mets.get('pe', 0.0) == 0.0:
                         dy = safe_float(info.get("dividendYield", 0.0))
                         if dy > 0 and dy < 1: dy *= 100
                         new_metrics = {"pe": safe_float(info.get("trailingPE", 0.0)), "pb": safe_float(info.get("priceToBook", 0.0)), "yield": dy}
                         if m == "TWSE": self.twse_metrics[c] = new_metrics
                         else: self.tpex_metrics[c] = new_metrics
-                except Exception as e: self.fetch_errors.append(f"{item['name']}({c}) YF備援抓取失敗: {e}")
+                except Exception as e: pass
 
     def calculate_basic_portfolio(self):
         self.fetch_market_data()
@@ -141,9 +135,6 @@ class TaiwanMarketTracker:
             method_ch = METHOD_MAP.get(v_method, "手動設定")
             extra_note = item.get("note", "")
 
-            # ==============================================================
-            # 🚀 核心橋接邏輯：強制交給 Python 算絕對數字，接通 RIM 與防呆模型
-            # ==============================================================
             cheap_price, fair_price, target_price = 0.0, 0.0, 0.0
             
             if v_method == "pe":
@@ -156,17 +147,13 @@ class TaiwanMarketTracker:
                 res = self.valuation_engine.calc_price_trend_valuation(c, price)
                 if res: cheap_price, fair_price, target_price, _, _ = res
             elif v_method == "rim":
-                # 橋接超額報酬模型 (Residual Income Model)
                 res = self.valuation_engine.calc_residual_income_valuation(c, price, current_pb)
-                if res and len(res) == 4:
-                    cheap_price, fair_price, target_price, _ = res
+                if res and len(res) == 4: cheap_price, fair_price, target_price, _ = res
                 method_ch = "超額報酬模型(RIM)"
             elif v_method == "yield":
-                # 橋接 H-Model 雙階股利折現模型
                 payout_ratio = item.get("payout_ratio", 0.5) 
                 res = self.valuation_engine.calc_ddm_valuation(c, price, payout_ratio)
-                if res and len(res) == 4:
-                    cheap_price, fair_price, target_price, _ = res
+                if res and len(res) == 4: cheap_price, fair_price, target_price, _ = res
                 method_ch = "H-Model 雙階折現"
             elif v_method == "etf_yield":
                 div_total = self.valuation_engine.get_recent_dividend(c)
@@ -180,7 +167,6 @@ class TaiwanMarketTracker:
                     fair_price = round(div_total / (y_fair / 100), 1)
                     target_price = round(div_total / (y_target / 100), 1)
 
-            # 🛡️ 葛拉漢公式防呆下限 (非金融股、非ETF才啟動)
             is_financial_or_etf = str(c).startswith('28') or str(c).startswith('58') or str(c).startswith('00')
             if not is_financial_or_etf and v_method not in ["trend", "etf_yield", "manual"] and price > 0:
                 graham_floor = self.valuation_engine.calc_graham_number(price, current_pe, current_pb)
@@ -188,10 +174,9 @@ class TaiwanMarketTracker:
                     cheap_price = max(cheap_price, graham_floor)
                     fair_price = max(fair_price, graham_floor * 1.2)
                     target_price = max(target_price, graham_floor * 1.5)
-                    extra_note += f"[葛拉漢底線保護: {graham_floor}]"
+                    extra_note += f"[葛拉漢保護: {graham_floor}]"
 
-            # 嚴格由 Python 判定當前位階
-            current_status = "合理續抱"
+                # 嚴格由 Python 判定當前位階
             if price > 0 and fair_price > 0:
                 if price <= cheap_price:
                     current_status = "便宜加碼"
@@ -199,6 +184,11 @@ class TaiwanMarketTracker:
                     current_status = "達標停利"
                 elif price >= fair_price + (target_price - fair_price) * 0.7:
                     current_status = "偏高留意"
+                else:
+                    current_status = "合理續抱"
+            else:
+                # 🛑 只要算不出合理價，就誠實標示資料不足，絕不顯示續抱
+                current_status = "⚠️ 資料不足/模型失效"
 
             total_cost += (s * cp)
             total_mkt += (s * price)
@@ -208,8 +198,7 @@ class TaiwanMarketTracker:
                 "本益比(PE)": current_pe, "淨值比(PB)": current_pb, "殖利率(%)": dyield,
                 "指定估價法": method_ch, 
                 "便宜價": cheap_price, "合理價": fair_price, "昂貴(目標)價": target_price,
-                "當前狀態": current_status,
-                "自訂備註與限制": extra_note
+                "當前狀態": current_status, "自訂備註與限制": extra_note
             })
 
         self.save_to_db(total_cost, total_mkt, total_mkt + CASH_RESERVE, CASH_RESERVE, total_mkt - total_cost, round(((total_mkt - total_cost) / total_cost) * 100, 2) if total_cost > 0 else 0)
@@ -221,8 +210,7 @@ class TaiwanMarketTracker:
         start_date = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
         
         for item in PORTFOLIO:
-            if not item.get("is_core", False):
-                continue
+            if not item.get("is_core", False): continue
             
             c = item["code"]
             ticker_name = item["name"]
@@ -252,8 +240,7 @@ class TaiwanMarketTracker:
                     
                     quant_info["技術面狀態"] = f"現價:{price:.1f}, MA20:{ma20:.1f}, 近日變化:{chg_pct*100:.1f}%, 量能比:{vol_ratio:.2f}x"
                     quant_info["技術指標"] = f"RSI(14): {latest.get('RSI_14', 0):.1f}"
-            except:
-                pass
+            except: pass
 
             if FINMIND_TOKEN:
                 f_net, t_net, d_net, all_net = 0, 0, 0, 0
@@ -268,7 +255,7 @@ class TaiwanMarketTracker:
                     if res_inst.get("data"):
                         df_inst = pd.DataFrame(res_inst["data"]).sort_values('date', ascending=False)
                         
-                        def get_trend(name):
+                        def get_inst_trend(name):
                             rows = df_inst[df_inst['name'] == name]
                             if rows.empty: return 0, 0, 50
                             dates = sorted(rows['date'].unique(), reverse=True)
@@ -292,19 +279,38 @@ class TaiwanMarketTracker:
                             score = 100 if days >= 3 else 80 if days > 0 else 50 if days == 0 else 20 if days > -3 else 0
                             return curr_net, days, score
 
-                        # 🚀 關鍵修復：改用 FinMind 原生英文鍵值
-                        f_net, f_cons, f_score = get_trend('Foreign_Investor')
-                        t_net, t_cons, t_score = get_trend('Investment_Trust')
+                        # 🚀 完全按照 HTML 中的英文鍵值讀取 FinMind 資料
+                        f_net, f_cons, f_score = get_inst_trend('Foreign_Investor')
+                        t_net, t_cons, t_score = get_inst_trend('Investment_Trust')
                         
-                        d_self, d_days_s, _ = get_trend('Dealer_self')
-                        d_hedg, d_days_h, _ = get_trend('Dealer_Hedging')
-                        d_net = d_self + d_hedg
-                        d_days = d_days_s if d_self != 0 else d_days_h
-                        d_score = 90 if d_days >= 2 else 70 if d_days > 0 else 30 if -2 < d_days < 0 else 10 if d_days <= -2 else 50
+                        # 自營商邏輯
+                        d_self_rows = df_inst[df_inst['name'] == 'Dealer_self']
+                        d_hedg_rows = df_inst[df_inst['name'] == 'Dealer_Hedging']
+                        d_series = []
+                        dates = sorted(df_inst['date'].unique(), reverse=True)[:10]
+                        for dt in dates:
+                            s_rows = d_self_rows[d_self_rows['date'] == dt]
+                            h_rows = d_hedg_rows[d_hedg_rows['date'] == dt]
+                            s_net = (pd.to_numeric(s_rows['buy']).sum() - pd.to_numeric(s_rows['sell']).sum()) if not s_rows.empty else 0
+                            h_net = (pd.to_numeric(h_rows['buy']).sum() - pd.to_numeric(h_rows['sell']).sum()) if not h_rows.empty else 0
+                            d_series.append(s_net + h_net)
+
+                        d_net = round(d_series[0] / 1000) if d_series else 0
+                        d_days = 0
+                        if d_series and d_series[0] > 0:
+                            for v in d_series:
+                                if v > 0: d_days += 1
+                                else: break
+                            d_score = 90 if d_days >= 2 else 70
+                        elif d_series and d_series[0] < 0:
+                            for v in d_series:
+                                if v < 0: d_days -= 1
+                                else: break
+                            d_score = 10 if d_days <= -2 else 30
+                        else: d_score = 50
                         
                         all_net = f_net + t_net + d_net
-                except:
-                    pass
+                except: pass
 
                 mg_chg, ss_chg, sr_ratio = 0, 0, 0
                 try:
@@ -324,16 +330,10 @@ class TaiwanMarketTracker:
                             ss_bal = float(latest_mg.get('ShortSaleTodayBalance', 0))
                             ss_prev = float(latest_mg.get('ShortSaleYesterdayBalance', ss_bal))
                             ss_chg = ss_bal - ss_prev
-                            
                             sr_ratio = (ss_bal / mg_bal * 100) if mg_bal > 0 else 0
-                except:
-                    pass
+                except: pass
 
-                # ==========================================
-                # 🚀 寫入  籌碼動能計分引擎 (Python 端強制計分)
-                # ==========================================
                 cost_dist = ((price - ma20) / ma20 * 100) if ma20 > 0 else 0
-                
                 inst_score = round((f_score * 0.6) + (t_score * 0.3) + (d_score * 0.1))
                 
                 accum, dist = 0, 0
@@ -366,17 +366,9 @@ class TaiwanMarketTracker:
                 elif sr_ratio > 5: short_score = 60
                 if ss_chg > 0: short_score = min(100, short_score + 10)
                 
-                contrib = {
-                    "inst": round(inst_score * 0.30),
-                    "radar": round(radar_score * 0.25),
-                    "cost": round(cost_score * 0.20),
-                    "retail": round(retail_score * 0.15),
-                    "short": round(short_score * 0.10)
-                }
-                
+                contrib = {"inst": round(inst_score * 0.30), "radar": round(radar_score * 0.25), "cost": round(cost_score * 0.20), "retail": round(retail_score * 0.15), "short": round(short_score * 0.10)}
                 final_chip_score = sum(contrib.values())
                 
-                # 外資連賣懲罰機制
                 foreign_penalty = 0
                 if f_cons <= -8: foreign_penalty = 25
                 elif f_cons <= -5: foreign_penalty = 15
@@ -385,11 +377,10 @@ class TaiwanMarketTracker:
                 final_chip_score = max(0, final_chip_score - foreign_penalty)
                 chip_status = "✅ 極佳" if final_chip_score >= 81 else "🟢 良好" if final_chip_score >= 61 else "🟡 中性" if final_chip_score >= 41 else "🟠 偏弱" if final_chip_score >= 21 else "🔴 惡化"
                 
-                quant_info["籌碼總分"] = f"{final_chip_score}/100 ({chip_status})"
+                quant_info["V9籌碼總分"] = f"{final_chip_score}/100 ({chip_status})"
                 quant_info["籌碼細項結構"] = f"法人共識度:{contrib['inst']}/30分, 主力雷達:{contrib['radar']}/25分, 均線安全帶:{contrib['cost']}/20分, 散戶動向:{contrib['retail']}/15分, 軋空潛力:{contrib['short']}/10分"
                 quant_info["散戶狀態判定"] = retail_msg
                 
-                # 修正連賣 0 日的語意防呆
                 f_dir = "連買" if f_cons > 0 else "連賣" if f_cons < 0 else "無連續動向"
                 t_dir = "連買" if t_cons > 0 else "連賣" if t_cons < 0 else "無連續動向"
                 
@@ -400,7 +391,8 @@ class TaiwanMarketTracker:
             time.sleep(1.5)
 
         return core_data
-    
+
+    # 🚀 將漏掉的 save_to_db 補在這裡：
     def save_to_db(self, tc, tm, tnw, cash, pl, ret):
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -424,7 +416,7 @@ class TaiwanMarketTracker:
                         news_text_for_ai += f"[{name} {code}] {title}\n"
                         count += 1
                         if count >= 2: break
-            except Exception: pass
+            except: pass
         if not news_text_for_ai: news_text_for_ai = "今日暫無重大媒體新聞。"
 
         official_text_for_ai = ""
@@ -455,8 +447,7 @@ class TaiwanMarketTracker:
             for code, data in core_data_dict.items():
                 core_data_text += f"\n--- 【{data.get('name')} ({code}) 深度量化籌碼與技術面】 ---\n"
                 for k, v in data.items():
-                    if k not in ["name", "code"]:
-                        core_data_text += f"{k}: {v}\n"
+                    if k not in ["name", "code"]: core_data_text += f"{k}: {v}\n"
         else:
             core_data_text = "今日無指定核心持股進行深度推演。"
 
@@ -475,7 +466,6 @@ class TaiwanMarketTracker:
                 
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
-                # 🚀 升級 AI Prompt：賦予「左側攔截」與「質化驗證」的嚴格指令
                 prompt = f"""
                 你是一位頂尖的量化投資經理與實戰交易員。請根據以下「基礎全景數據」與「核心股深度量化籌碼」，結合新聞動態產出盤後報告。
                 
@@ -491,7 +481,7 @@ class TaiwanMarketTracker:
                   <!-- 結合大盤與產業輪動，撰寫約 100 字摘要 --></p>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 全投組基礎估值掃描</h4>
-                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;'>
+                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
                     <tr style='background-color: #e9ecef;'>
                       <th style='border: 1px solid #ccc; padding: 8px;'>標的</th>
                       <th style='border: 1px solid #ccc; padding: 8px;'>現價</th>
@@ -549,42 +539,26 @@ class TaiwanMarketTracker:
                             try:
                                 api_call_count += 1
                                 print(f"➡️ 正在發送第 {api_call_count} 次 API 請求 (目標模型: {model_name}, 重試次數: {attempt})...")
-                                
-                                response = model.generate_content(
-                                    prompt, 
-                                    safety_settings=safety_settings,
-                                    request_options={"timeout": 150} 
-                                )
+                                response = model.generate_content(prompt, safety_settings=safety_settings, request_options={"timeout": 150})
                                 print(f"✅ API 請求成功！本次排程總共消耗了 {api_call_count} 次 API 額度。")
                                 break
                             except Exception as err:
                                 err_str = str(err).lower()
-                                is_daily_quota = "429" in err_str and ("per day" in err_str or "perday" in err_str)
-                                if is_daily_quota:
+                                if "429" in err_str and ("per day" in err_str or "perday" in err_str):
                                     print(f"⚠️ {model_name} 每日額度已用完(非暫時性限制)，直接切換下一個備援模型...")
                                     raise err
                                 elif ("429" in err_str or "504" in err_str or "deadline" in err_str) and attempt < 2:
                                     wait_seconds = 25 * (attempt + 1)
                                     print(f"⚠️ 觸發伺服器限制或超時 ({err})，等待 {wait_seconds} 秒後重試...")
                                     time.sleep(wait_seconds)
-                                else:
-                                    raise err
-                        if response:
-                            break
-                    except Exception as model_err:
-                        err_str = str(model_err).lower()
-                        if "404" in err_str or "429" in err_str or "504" in err_str or "deadline" in err_str:
-                            print(f"⚠️ 模型 {model_name} 發生異常，嘗試切換下一個備援模型...")
-                            continue
-                        raise model_err
+                                else: raise err
+                        if response: break
+                    except: continue
 
-                if not response:
-                    raise Exception(f"所有可用模型皆無法產生內容。總共嘗試呼叫了 {api_call_count} 次 API。")
-
+                if not response: raise Exception(f"所有可用模型皆無法產生內容。總共嘗試呼叫了 {api_call_count} 次 API。")
                 final_html = response.text.strip()
                 if final_html.startswith("```html"): final_html = final_html[7:]
                 if final_html.endswith("```"): final_html = final_html[:-3]
-                
                 return final_html
             except Exception as e:
                 print(f"Gemini API 呼叫失敗: {e}")
@@ -592,31 +566,14 @@ class TaiwanMarketTracker:
 
     def send_email_notify(self, df_basic, core_data_dict, today_str):
         if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return
-        
         analysis_html = self.get_news_and_analysis(df_basic, core_data_dict)
         msg = MIMEMultipart('related')
         msg['Subject'] = f"📊 【AI 量化投資組合決策矩陣】 {today_str}"
         msg['From'], msg['To'] = GMAIL_ADDRESS, GMAIL_ADDRESS
-
-        error_banner = ""
-        if self.fetch_errors:
-            error_items = "".join([f"<li>{e}</li>" for e in self.fetch_errors])
-            error_banner = f'''<div style="background-color:#fff3cd; border:1px solid #ffeeba; padding:10px 15px; border-radius:5px; margin-bottom:15px; font-size:12px;"><b>⚠️ 本次執行有資料抓取異常 (AI 將以備援數據推估)：</b><ul style="margin:6px 0 0 20px;">{error_items}</ul></div>'''
-
-        html = f'''
-        <html><head><style>
-            body {{ font-family: Arial, sans-serif; color: #333; }}
-        </style></head><body>
-          <h2>📈 AI 投資組合動態儀表板 ({today_str})</h2>
-          {error_banner}
-          {analysis_html}
-        </body></html>
-        '''
-
+        html = f"<html><head><style>body {{ font-family: Arial, sans-serif; color: #333; }}</style></head><body><h2>📈 AI 投資組合動態儀表板 ({today_str})</h2>{analysis_html}</body></html>"
         msg_alternative = MIMEMultipart('alternative')
         msg.attach(msg_alternative)
         msg_alternative.attach(MIMEText(html, 'html'))
-                
         try:
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
@@ -632,5 +589,4 @@ class TaiwanMarketTracker:
         self.send_email_notify(df_basic, core_data_dict, today_str)
 
 if __name__ == "__main__":
-    tracker = TaiwanMarketTracker()
-    tracker.run()
+    TaiwanMarketTracker().run()

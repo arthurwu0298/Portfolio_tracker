@@ -291,22 +291,21 @@ class FinMindValuationEngine:
             return round(math.sqrt(22.5 * eps * bvps), 1)
         return 0.0
 
-    # ==============================================================
-    # 🚀 修復版：超額報酬模型 (Residual Income Model)
+   # ==============================================================
+    # 🚀 嚴謹版：超額報酬模型 (Residual Income Model) - 絕不造假數據
     # ==============================================================
     def _get_3yr_avg_roe(self, stock_id):
-        """計算近三年 ROE 加權移動平均，相容金融股的特殊會計科目"""
+        """計算近三年 ROE 加權移動平均，相容金融股的中英文特殊會計科目"""
         fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=4)
-        if fs_df.empty: return 0.0
+        if fs_df.empty: return 0.0 # 🛑 嚴格防呆：無財報就是 0，不瞎猜
         
-        # 擴充金融業專屬的財報科目名稱
-        ni_keys = ['IncomeAfterTaxes', 'NetIncome', 'ProfitLoss', 'ProfitLossAttributableToOwnersOfParent']
-        eq_keys = ['Equity', 'TotalEquity', 'EquityAttributableToOwnersOfParent', 'StockholdersEquity']
+        ni_keys = ['IncomeAfterTaxes', 'NetIncome', 'ProfitLoss', 'ProfitLossAttributableToOwnersOfParent', '本期淨利（淨損）', '歸屬於母公司業主之本期淨利（淨損）', '本期淨利']
+        eq_keys = ['Equity', 'TotalEquity', 'EquityAttributableToOwnersOfParent', 'StockholdersEquity', '權益總計', '權益總額', '歸屬於母公司業主之權益']
         
         ni_data = fs_df[fs_df["type"].isin(ni_keys)].copy()
         eq_data = fs_df[fs_df["type"].isin(eq_keys)].copy()
         
-        if ni_data.empty or eq_data.empty: return 0.0
+        if ni_data.empty or eq_data.empty: return 0.0 # 🛑 找不到科目就是 0
         
         ni_data['date'] = pd.to_datetime(ni_data['date'])
         eq_data['date'] = pd.to_datetime(eq_data['date'])
@@ -332,33 +331,36 @@ class FinMindValuationEngine:
         weight_sum = sum(weights)
         avg_roe = sum(r * w for r, w in zip(roes, weights)) / weight_sum
         
-        return max(0.0, min(avg_roe, 0.25))
+        # 允許出現負數 ROE，但設定天花板 25% 避免極端值暴衝
+        return min(avg_roe, 0.25)
 
     def calc_residual_income_valuation(self, stock_id, current_price, current_pb):
         """利用超額報酬模型推算合理淨值比 (Target P/B)"""
         if current_price <= 0:
             return 0, 0, 0, None
             
-        # 備援防呆：若 TWSE/YF 抓不到即時 PB，自動從 FinMind 歷史抓取最新一筆
+        # PB 備援：若 YF 抓不到即時 PB，抓 FinMind 最新一筆歷史
         if current_pb <= 0:
             df_per = self._fetch_data("TaiwanStockPER", stock_id, years_back=1)
             if not df_per.empty and "PBR" in df_per.columns:
                 valid_pb = df_per[df_per["PBR"] > 0]["PBR"]
                 if not valid_pb.empty:
                     current_pb = valid_pb.iloc[-1]
-            # 如果還是抓不到 PB，只能放棄運算
+            
+            # 🛑 嚴格防呆：如果連歷史 PB 都沒有，代表無法計算，直接放棄，絕不硬塞 1.0
             if current_pb <= 0:
                 return 0, 0, 0, None
             
         bvps = current_price / current_pb
         roe = self._get_3yr_avg_roe(stock_id)
         
-        # 若 ROE 算出來小於等於 0，RIM 模型無效
+        # 🛑 嚴格防呆：若 ROE <= 0，代表企業正在虧損，RIM 模型失效，無法給出估值
         if roe <= 0:
             return 0, 0, 0, None
             
         g = 0.02 
         
+        # 股權成本 (Cost of Equity)
         ke_cheap = 0.085
         ke_fair = 0.070
         ke_exp = 0.055
