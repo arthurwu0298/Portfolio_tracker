@@ -169,7 +169,7 @@ class TaiwanMarketTracker:
 
             is_financial_or_etf = str(c).startswith('28') or str(c).startswith('58') or str(c).startswith('00')
             if not is_financial_or_etf and v_method not in ["trend", "etf_yield", "manual"] and price > 0:
-                graham_floor = self.valuation_engine.calc_graham_number(price, current_pe, current_pb)
+                graham_floor = self.valuation_engine.calc_graham_number(c, price, current_pb)
                 if graham_floor > 0 and (cheap_price < graham_floor or cheap_price == 0):
                     cheap_price = max(cheap_price, graham_floor)
                     fair_price = max(fair_price, graham_floor * 1.2)
@@ -205,7 +205,7 @@ class TaiwanMarketTracker:
         return pd.DataFrame(records)
 
     def fetch_advanced_quant_data(self):
-        print("🔍 [階段二] 掃描核心持股 (is_core=True) 並啟動 V9 籌碼動能計分引擎...")
+        print("🔍 [階段二] 掃描核心持股 (is_core=True) 並啟動籌碼動能計分引擎...")
         core_data = {}
         start_date = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
         
@@ -377,7 +377,7 @@ class TaiwanMarketTracker:
                 final_chip_score = max(0, final_chip_score - foreign_penalty)
                 chip_status = "✅ 極佳" if final_chip_score >= 81 else "🟢 良好" if final_chip_score >= 61 else "🟡 中性" if final_chip_score >= 41 else "🟠 偏弱" if final_chip_score >= 21 else "🔴 惡化"
                 
-                quant_info["V9籌碼總分"] = f"{final_chip_score}/100 ({chip_status})"
+                quant_info["籌碼總分"] = f"{final_chip_score}/100 ({chip_status})"
                 quant_info["籌碼細項結構"] = f"法人共識度:{contrib['inst']}/30分, 主力雷達:{contrib['radar']}/25分, 均線安全帶:{contrib['cost']}/20分, 散戶動向:{contrib['retail']}/15分, 軋空潛力:{contrib['short']}/10分"
                 quant_info["散戶狀態判定"] = retail_msg
                 
@@ -467,18 +467,19 @@ class TaiwanMarketTracker:
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
                 prompt = f"""
-                你是一位頂尖的量化投資經理與實戰交易員。請根據以下「基礎全景數據」與「核心股深度量化籌碼」，結合新聞動態產出盤後報告。
+                你是一位頂尖的量化投資經理與實戰交易員和分析員。請根據以下「基礎全景數據」與「核心股深度量化籌碼」，結合新聞動態產出盤後報告。
                 
                 【重要操作紀律】
                 1. 若個股的「當前狀態」顯示為便宜，但其「V9籌碼總分」低於 40 分（惡化/偏弱）或外資出現連續賣超，請在決策樹中強制標示為「左側下殺，暫緩承接，籌碼尚未沉澱」。
                 2. 請比對「估值落差」與新聞事件。如果新聞出現「產能滿載/擴廠/新產品」，請判斷是否能成為支撐目前偏高估值（或提前買進便宜價）的實質護城河。
+                3. 若表格中某檔個股的估值顯示為「0.00」或狀態為「⚠️ 資料不足」，代表財報缺失或模型失效。請蒐集最新資料推算合理價，但請說明估值理由！針對該檔標的，探討其「籌碼面」與「技術面」動向。
                 
                 【絕對輸出格式要求】
                 請直接輸出 HTML，不要用 ```html 包裝：
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
                   <p style='font-size: 14px; margin-bottom: 20px;'><b>截至 {today_str_for_prompt} 最新盤後，投資組合綜合評估：</b><br>
-                  <!-- 結合大盤與產業輪動，撰寫約 100 字摘要 --></p>
+                  <!-- 結合大盤與產業輪動和產業動態，撰寫約 150 字摘要 --></p>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 全投組基礎估值掃描</h4>
                   <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
@@ -490,7 +491,7 @@ class TaiwanMarketTracker:
                       <th style='border: 1px solid #ccc; padding: 8px;'>昂貴(目標)價</th>
                       <th style='border: 1px solid #ccc; padding: 8px;'>當前狀態</th>
                     </tr>
-                    <!-- 嚴格套用下方傳入的【今日基礎全景數據】，絕對禁止重新計算價格！ -->
+                    <!-- 套用下方傳入的【今日基礎全景數據】，若數據為0，請重新計算價格！ -->
                   </table>
                   
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>二、 最新即時焦點消息與產業重點分析</h4>
@@ -501,11 +502,11 @@ class TaiwanMarketTracker:
                   <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>三、 核心持股深度多空決策矩陣</h4>
                   <!-- 針對每一檔核心股重複以下結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
-                    <h5 style='color: #333; margin-top: 0;'>[股票名稱] V9籌碼與估值矩陣分析</h5>
+                    <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
                     
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
                        <b>基本面位階：</b> <!-- 寫出現在處於便宜/合理/昂貴區 --><br>
-                       <b>V9 籌碼動能：</b> <!-- 引用傳入的籌碼分數、散戶狀態與外資動向 --><br>
+                       <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數、散戶狀態與外資動向 --><br>
                        <b>技術面：</b> <!-- 簡述 MA20 乖離與 RSI -->
                     </p>
                     

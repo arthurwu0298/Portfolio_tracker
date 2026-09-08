@@ -75,11 +75,16 @@ class FinMindValuationEngine:
         if current_price <= 0 or current_pe <= 0: return 0, 0, 0, None
         df = self._fetch_data("TaiwanStockPER", stock_id, years_back=5)
         if df.empty or "PER" not in df.columns: return 0, 0, 0, None
-        ttm_eps = current_price / current_pe
+        
+        # 🚀 升級：不再用每日浮動的 current_price / current_pe
+        # 改用具有 CAPE 均值保護與營運槓桿推算的 Forward EPS，消除循環股暴衝盲點
+        fwd_eps, _ = self.estimate_forward_eps(stock_id)
+        if fwd_eps <= 0: return 0, 0, 0, None
+        
         valid_pe = df[df["PER"] > 0]["PER"]
         if valid_pe.empty: return 0, 0, 0, None
         pe_20, pe_50, pe_80 = np.percentile(valid_pe, 20), np.percentile(valid_pe, 50), np.percentile(valid_pe, 80)
-        return round(ttm_eps * pe_20, 1), round(ttm_eps * pe_50, 1), round(ttm_eps * pe_80, 1), None
+        return round(fwd_eps * pe_20, 1), round(fwd_eps * pe_50, 1), round(fwd_eps * pe_80, 1), None
 
     def calc_pb_valuation(self, stock_id, current_price, current_pb):
         if current_price <= 0 or current_pb <= 0: return 0, 0, 0, None
@@ -252,9 +257,7 @@ class FinMindValuationEngine:
         return eps_est, g
 
     def calc_ddm_valuation(self, stock_id, current_price, payout_ratio):
-        if current_price <= 0 or payout_ratio <= 0:
-            return 0, 0, 0, None
-            
+        if current_price <= 0 or payout_ratio <= 0: return 0, 0, 0, None
         fwd_eps, g_S = self.estimate_forward_eps(stock_id)
         div_total = self.get_recent_dividend(stock_id)
         
@@ -263,7 +266,10 @@ class FinMindValuationEngine:
         if D0 <= 0: return 0, 0, 0, None
 
         g_L = 0.02  
-        g_S = max(-0.25, min(0.35, g_S)) 
+        profile = self._get_profile(stock_id)
+        # 🚀 升級：景氣循環股谷底翻揚動能極強，短期成長率上限放寬至 80%
+        cap = 0.80 if profile['is_cyclical'] else 0.35
+        g_S = max(-0.25, min(cap, g_S)) 
         H = 2.5 
         k_cheap, k_fair, k_exp = 0.075, 0.060, 0.045
         
@@ -279,33 +285,35 @@ class FinMindValuationEngine:
     # ==============================================================
     # 🚀 新增 1：葛拉漢公式 (Graham Number) 防呆下限
     # ==============================================================
-    def calc_graham_number(self, current_price, current_pe, current_pb):
-        """計算葛拉漢公式防呆下限，不適用於獲利或淨值為負之標的"""
-        if current_price <= 0 or current_pe <= 0 or current_pb <= 0:
-            return 0.0
-        
-        eps = current_price / current_pe
+    def calc_graham_number(self, stock_id, current_price, current_pb):
+        # 🚀 升級：以經過平滑處理的 Forward EPS 取代每日跳動的 TTM EPS
+        if current_price <= 0 or current_pb <= 0: return 0.0
+        eps, _ = self.estimate_forward_eps(stock_id)
         bvps = current_price / current_pb
-        
-        if eps > 0 and bvps > 0:
-            return round(math.sqrt(22.5 * eps * bvps), 1)
+        if eps > 0 and bvps > 0: return round(math.sqrt(22.5 * eps * bvps), 1)
         return 0.0
 
-   # ==============================================================
+    # ==============================================================
     # 🚀 嚴謹版：超額報酬模型 (Residual Income Model) - 絕不造假數據
+    # 🛠️ 修正：淨利與股東權益分屬不同報表，不能只查一個資料集
+    #    - 淨利 (IncomeAfterTaxes 等) 屬於「綜合損益表」TaiwanStockFinancialStatements
+    #    - 股東權益 (Equity 等) 屬於「資產負債表」TaiwanStockBalanceSheet，兩者是 FinMind 上
+    #      不同的 dataset；之前只查損益表，導致權益科目幾乎抓不到，ROE 永遠算出 0，
+    #      RIM 估值連帶全部歸零。
     # ==============================================================
     def _get_3yr_avg_roe(self, stock_id):
-        """計算近三年 ROE 加權移動平均，相容金融股的中英文特殊會計科目"""
+        # 🚀 核心修復：正確呼叫 TaiwanStockBalanceSheet 抓取權益
         fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=4)
-        if fs_df.empty: return 0.0 # 🛑 嚴格防呆：無財報就是 0，不瞎猜
+        bs_df = self._fetch_data("TaiwanStockBalanceSheet", stock_id, years_back=4)
+        if fs_df.empty or bs_df.empty: return 0.0 
         
         ni_keys = ['IncomeAfterTaxes', 'NetIncome', 'ProfitLoss', 'ProfitLossAttributableToOwnersOfParent', '本期淨利（淨損）', '歸屬於母公司業主之本期淨利（淨損）', '本期淨利']
         eq_keys = ['Equity', 'TotalEquity', 'EquityAttributableToOwnersOfParent', 'StockholdersEquity', '權益總計', '權益總額', '歸屬於母公司業主之權益']
         
         ni_data = fs_df[fs_df["type"].isin(ni_keys)].copy()
-        eq_data = fs_df[fs_df["type"].isin(eq_keys)].copy()
+        eq_data = bs_df[bs_df["type"].isin(eq_keys)].copy()
         
-        if ni_data.empty or eq_data.empty: return 0.0 # 🛑 找不到科目就是 0
+        if ni_data.empty or eq_data.empty: return 0.0 
         
         ni_data['date'] = pd.to_datetime(ni_data['date'])
         eq_data['date'] = pd.to_datetime(eq_data['date'])
@@ -322,17 +330,14 @@ class FinMindValuationEngine:
             if not ni_yr.empty and not eq_yr.empty:
                 ni_sum = ni_yr['value'].sum()
                 eq_avg = eq_yr['value'].mean()
-                if eq_avg > 0:
-                    roes.append(ni_sum / eq_avg)
+                if eq_avg > 0: roes.append(ni_sum / eq_avg)
         
         if not roes: return 0.0
         
         weights = [0.5, 0.3, 0.2][:len(roes)]
         weight_sum = sum(weights)
         avg_roe = sum(r * w for r, w in zip(roes, weights)) / weight_sum
-        
-        # 允許出現負數 ROE，但設定天花板 25% 避免極端值暴衝
-        return min(avg_roe, 0.25)
+        return max(0.01, min(avg_roe, 0.25))
 
     def calc_residual_income_valuation(self, stock_id, current_price, current_pb):
         """利用超額報酬模型推算合理淨值比 (Target P/B)"""
