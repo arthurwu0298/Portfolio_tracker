@@ -12,7 +12,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from portfolio_config import (
-    PORTFOLIO, CASH_RESERVE, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, FINMIND_TOKEN
+    PORTFOLIO, CASH_RESERVE, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, FINMIND_TOKEN,
+    EXTREME_VALUATION_PERCENTILE, MOMENTUM_YOY_THRESHOLD
 )
 from valuation_engine import FinMindValuationEngine
 
@@ -55,37 +56,58 @@ class TaiwanMarketTracker:
         conn.commit()
         conn.close()
 
+    def _get_with_retry(self, url, label, retries=2, backoff=5, timeout=15):
+        """
+        帶重試的GET請求，處理TPEx/TWSE偶發的連線中斷或逾時。
+        「Response ended prematurely」這類錯誤是伺服器在傳輸中途斷線，
+        不是單純的逾時，重試通常就能解決；連續失敗才記錄進fetch_errors。
+        """
+        last_err = None
+        for attempt in range(retries + 1):
+            try:
+                res = self.session.get(url, timeout=timeout)
+                if res.status_code == 200:
+                    return res
+                last_err = f"HTTP {res.status_code}"
+            except Exception as e:
+                last_err = str(e)
+            if attempt < retries:
+                print(f"⚠️ {label} 第{attempt + 1}次請求失敗({last_err})，{backoff}秒後重試...")
+                time.sleep(backoff)
+        self.fetch_errors.append(f"{label}請求失敗(重試{retries}次後仍失敗): {last_err}")
+        return None
+
     def fetch_market_data(self):
         print("📥 [階段一] 抓取 TWSE / TPEx 最新報價與客觀指標(PE/PB/Yield)...")
-        try:
-            res1 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=15)
-            if res1.status_code == 200:
+        res1 = self._get_with_retry("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", "TWSE股價API")
+        if res1 is not None:
+            try:
                 for item in res1.json(): self.twse_prices[item["Code"]] = safe_float(item.get("ClosingPrice"))
-            else: self.fetch_errors.append(f"TWSE股價API回應異常 (HTTP {res1.status_code})")
-        except Exception as e: self.fetch_errors.append(f"TWSE股價API請求失敗: {e}")
+            except Exception as e:
+                self.fetch_errors.append(f"TWSE股價API回應無法解析: {e}")
 
-        try:
-            res2 = self.session.get("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_d", timeout=15)
-            if res2.status_code == 200:
+        res2 = self._get_with_retry("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_d", "TWSE估值API")
+        if res2 is not None:
+            try:
                 for item in res2.json():
                     self.twse_metrics[item["Code"]] = {
                         "yield": safe_float(item.get("DividendYield")),
                         "pe": safe_float(item.get("PEratio")),
                         "pb": safe_float(item.get("PBratio"))
                     }
-            else: self.fetch_errors.append(f"TWSE估值API回應異常 (HTTP {res2.status_code})")
-        except Exception as e: self.fetch_errors.append(f"TWSE估值API請求失敗: {e}")
+            except Exception as e:
+                self.fetch_errors.append(f"TWSE估值API回應無法解析: {e}")
 
-        try:
-            res3 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=15)
-            if res3.status_code == 200:
+        res3 = self._get_with_retry("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", "TPEx股價API")
+        if res3 is not None:
+            try:
                 for item in res3.json(): self.tpex_prices[item["SecuritiesCompanyCode"]] = safe_float(item.get("Close"))
-            else: self.fetch_errors.append(f"TPEx股價API回應異常 (HTTP {res3.status_code})")
-        except Exception as e: self.fetch_errors.append(f"TPEx股價API請求失敗: {e}")
+            except Exception as e:
+                self.fetch_errors.append(f"TPEx股價API回應無法解析: {e}")
 
-        try:
-            res4 = self.session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis", timeout=15)
-            if res4.status_code == 200:
+        res4 = self._get_with_retry("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis", "TPEx估值API")
+        if res4 is not None:
+            try:
                 for item in res4.json():
                     lower_item = {k.lower(): v for k, v in item.items()}
                     sec_code = lower_item.get("securitiescompanycode")
@@ -95,8 +117,8 @@ class TaiwanMarketTracker:
                             "pe": safe_float(lower_item.get("peratio")),
                             "pb": safe_float(lower_item.get("pbratio"))
                         }
-            else: self.fetch_errors.append(f"TPEx估值API回應異常 (HTTP {res4.status_code})")
-        except Exception as e: self.fetch_errors.append(f"TPEx估值API請求失敗: {e}")
+            except Exception as e:
+                self.fetch_errors.append(f"TPEx估值API回應無法解析: {e}")
 
         for item in PORTFOLIO:
             c, m = item["code"], item["market"]
@@ -139,13 +161,94 @@ class TaiwanMarketTracker:
             v_method = item.get("valuation_method", "manual")
             method_ch = METHOD_MAP.get(v_method, "手動設定")
             extra_note = item.get("note", "")
+            cheap, fair, target, status = 0, 0, 0, "⚪ 觀望"
+            val_percentile = None
+
+            if v_method == "etf_yield":
+                recent_div = self.valuation_engine.get_recent_dividend(c)
+                dyield = round((recent_div / price) * 100, 2) if price > 0 and recent_div > 0 else dyield
+                ty = item.get("target_yields", {})
+                y_c, y_f, y_t = (ty.get('cheap', 0), ty.get('fair', 0), ty.get('target', 0)) if ty \
+                    else self.valuation_engine.calc_yield_percentile_bounds(c)
+
+                cheap = round(recent_div / (y_c / 100), 2) if y_c > 0 and recent_div > 0 else 0
+                fair = round(recent_div / (y_f / 100), 2) if y_f > 0 and recent_div > 0 else 0
+                target = round(recent_div / (y_t / 100), 2) if y_t > 0 and recent_div > 0 else 0
+
+                if dyield >= y_c and y_c > 0: status = "🟢 便宜 (加碼)"
+                elif y_f <= dyield < y_c: status = "🔵 合理 (續抱)"
+                elif y_t < dyield < y_f: status = "🟡 偏高 (留意)"
+                elif dyield <= y_t and y_t > 0: status = "🔴 達標 (停利)"
+
+            elif v_method == "yield":
+                payout_ratio = item.get("payout_ratio", 0.8)
+                est_eps = item.get("estimated_eps", 0.0)
+                if est_eps > 0:
+                    projected_eps = est_eps
+                else:
+                    projected_eps = self.valuation_engine.get_annualized_eps(c)
+                    if projected_eps <= 0:
+                        projected_eps = price / current_pe if current_pe > 0 else 0.0
+                projected_div = projected_eps * payout_ratio
+                dyield = round((projected_div / price) * 100, 2) if price > 0 else 0.0
+
+                ty = item.get("target_yields", {})
+                y_c, y_f, y_t = (ty.get('cheap', 0), ty.get('fair', 0), ty.get('target', 0)) if ty \
+                    else self.valuation_engine.calc_yield_percentile_bounds(c)
+
+                cheap = round(projected_div / (y_c / 100), 1) if y_c > 0 else 0
+                fair = round(projected_div / (y_f / 100), 1) if y_f > 0 else 0
+                target = round(projected_div / (y_t / 100), 1) if y_t > 0 else 0
+
+                if dyield >= y_c and y_c > 0: status = "🟢 便宜 (加碼)"
+                elif y_f <= dyield < y_c: status = "🔵 合理 (續抱)"
+                elif y_t < dyield < y_f: status = "🟡 偏高 (留意)"
+                elif dyield <= y_t and y_t > 0: status = "🔴 達標 (停利)"
+
+            elif v_method == "trend":
+                cheap, fair, target, deviation, val_percentile = \
+                    self.valuation_engine.calc_price_trend_valuation(c, price)
+                if val_percentile is None:
+                    status = "⚪ 觀望 (乖離率資料不足)"
+                elif val_percentile <= 20:
+                    status = f"🟢 相對趨勢偏弱 (第{val_percentile}百分位)"
+                elif val_percentile <= 80:
+                    status = f"🔵 相對趨勢正常 (第{val_percentile}百分位)"
+                elif val_percentile < 95:
+                    status = f"🟡 相對趨勢偏熱 (第{val_percentile}百分位)"
+                else:
+                    status = f"🟠 乖離率創近5年新高(第{val_percentile}百分位)，結構性多頭下屬常態"
+
+            else:
+                if v_method == "manual":
+                    cheap, fair, target = item.get("cheap", 0), item.get("fair", 0), item.get("target", 0)
+                elif v_method == "pe":
+                    cheap, fair, target, val_percentile = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
+                elif v_method == "pb":
+                    cheap, fair, target, val_percentile = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
+
+                if price <= cheap and cheap > 0: status = "🟢 便宜 (加碼)"
+                elif cheap < price <= fair: status = "🔵 合理 (續抱)"
+                elif fair < price < target: status = "🟡 偏高 (留意)"
+                elif price >= target and target > 0: status = "🔴 達標 (停利)"
+
+                if val_percentile is not None and val_percentile >= EXTREME_VALUATION_PERCENTILE:
+                    momentum = self.valuation_engine.get_revenue_momentum(c)
+                    if momentum and momentum["accelerating"] and momentum["latest_yoy"] > MOMENTUM_YOY_THRESHOLD:
+                        status = (f"🟣 結構性重估中 (估值第{val_percentile}百分位創新高，"
+                                  f"營收年增{momentum['latest_yoy']}%同步加速，非一般停利訊號)")
+                    else:
+                        yoy_txt = f"{momentum['latest_yoy']}%" if momentum else "無法取得"
+                        status = (f"🔴 估值第{val_percentile}百分位創近5年新高 (營收年增{yoy_txt}，"
+                                  f"未見同步加速，慎防情緒推升)")
 
             total_cost += (s * cp)
             total_mkt += (s * price)
 
             records.append({
-                "代碼": c, "名稱": item["name"], "現價": price, 
+                "代碼": c, "名稱": item["name"], "現價": price,
                 "本益比(PE)": current_pe, "淨值比(PB)": current_pb, "殖利率(%)": dyield,
+                "便宜價": cheap, "合理價": fair, "目標價": target, "狀態": status,
                 "指定估價法": method_ch, "自訂備註與限制": extra_note
             })
 
@@ -230,6 +333,42 @@ class TaiwanMarketTracker:
         conn.commit()
         conn.close()
 
+    def build_basic_table_html(self, df_basic):
+        """
+        「一、全投組基礎估值掃描」改成直接用 Python 從真實計算好的 df_basic 產生，
+        不再讓 Gemini 生成這張表——LLM 被要求逐格轉寫大量數字時容易失真/取整數，
+        便宜/合理/目標價這種要精確對應的數字，交給程式碼保證跟計算結果100%一致。
+        """
+        rows_html = ""
+        for _, row in df_basic.iterrows():
+            rows_html += f"""
+            <tr>
+              <td style='border: 1px solid #ccc; padding: 8px;'>{row['名稱']} ({row['代碼']})</td>
+              <td style='border: 1px solid #ccc; padding: 8px;'>{row['現價']}</td>
+              <td style='border: 1px solid #ccc; padding: 8px; color:#28a745;'>{row['便宜價']}</td>
+              <td style='border: 1px solid #ccc; padding: 8px; color:#0056b3;'>{row['合理價']}</td>
+              <td style='border: 1px solid #ccc; padding: 8px; color:#dc3545;'>{row['目標價']}</td>
+              <td style='border: 1px solid #ccc; padding: 8px;'>{row['狀態']}</td>
+            </tr>"""
+            if row.get('自訂備註與限制'):
+                rows_html += f"""
+            <tr><td colspan='6' style='border: 1px solid #ccc; padding: 4px 8px; font-size:11px; color:#888; background-color:#fafafa;'>備註：{row['自訂備註與限制']}</td></tr>"""
+
+        return f"""
+        <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 全投組基礎估值掃描</h4>
+        <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;'>
+          <tr style='background-color: #e9ecef;'>
+            <th style='border: 1px solid #ccc; padding: 8px;'>標的</th>
+            <th style='border: 1px solid #ccc; padding: 8px;'>現價</th>
+            <th style='border: 1px solid #ccc; padding: 8px;'>便宜價</th>
+            <th style='border: 1px solid #ccc; padding: 8px;'>合理價</th>
+            <th style='border: 1px solid #ccc; padding: 8px;'>昂貴(目標)價</th>
+            <th style='border: 1px solid #ccc; padding: 8px;'>當前狀態</th>
+          </tr>
+          {rows_html}
+        </table>
+        """
+
     def get_news_and_analysis(self, df_basic, core_data_dict):
         print("📰 [階段三] 抓取官方公告與媒體新聞，啟動 AI 雙層分析...")
         core_tickers = {item["code"]: item["name"] for item in PORTFOLIO}
@@ -298,30 +437,22 @@ class TaiwanMarketTracker:
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
                 prompt = f"""
-                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專家。請根據提供的「基礎全景數據」與「核心股深度量化籌碼」，提供「官方公告」與「媒體新聞」，請根據上述資訊，提供最新最即時投資組合,AI相關台股,台股金融業重點分析並撰寫專屬我的盤後報告，產出專屬的雙層盤後決策報告。
-                
+                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專家。請根據提供的「基礎全景數據」與「核心股深度量化籌碼」，提供「官方公告」與「媒體新聞」，請根據上述資訊，提供最新最即時投資組合,AI相關台股,台股金融業重點分析並撰寫專屬我的盤後報告。
+
                 【絕對輸出格式要求】
-                請嚴格依照下方 HTML 與文字結構輸出，不要使用 markdown 語法 (```html) 包裝，直接輸出 HTML：
+                請嚴格依照下方 HTML 與文字結構輸出，不要使用 markdown 語法 (```html) 包裝，直接輸出 HTML。
+                注意：全投組的便宜/合理/目標價表格已經由程式碼另外產生並附加在你的輸出前面，
+                你不需要、也不應該自己重新生成那張表格或重新估算任何標的的便宜/合理/目標價數字；
+                你只需要負責下面這幾個部分的文字分析：
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
                   <p style='font-size: 14px; margin-bottom: 20px;'><b>截至 {today_str_for_prompt} 最新盤後，投資組合綜合評估：</b><br>
-                  <!-- 根據大盤趨勢與投資組合整體狀態，寫約 100 字摘要 --></p>
+                  <!-- 根據大盤趨勢與投資組合整體狀態，寫約 100 字摘要。只寫質化判斷(方向、風險、留意重點)，
+                       不要在這段引用任何具體價格或百分比數字，因為這是你自己重新估算的，容易跟表格對不上 --></p>
 
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 全投組基礎估值掃描</h4>
-                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;'>
-                    <tr style='background-color: #e9ecef;'>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>標的</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>現價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>便宜價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>合理價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>昂貴(目標)價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>當前狀態</th>
-                    </tr>
-                    <!-- 根據【基礎全景數據】生成所有標的表格。必須填寫明確估算數字與狀態(如: 便宜加碼、合理續抱、偏高留意) -->
-                  </table>
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 最新即時焦點消息與產業重點分析</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
-                    <!-- 結合新聞與重訊，精煉出 3 到 4 點產業與個股消息。請去除無意義的表單廢話。 -->
+                    <!-- 結合新聞與重訊，精煉出 5 到 6 點產業與個股消息。請去除無意義的表單廢話。 -->
                   </ul>
                   <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>二、 核心持股深度多空決策矩陣</h4>
                   <!-- 針對每一檔【核心股深度量化籌碼】裡的股票，重複以下結構 -->
@@ -334,7 +465,7 @@ class TaiwanMarketTracker:
                        <b>籌碼結構：</b> <!-- 根據傳入的外資/投信買賣超與融資券，判斷籌碼流向 -->
                     </p>
                     
-                    <h6 style='margin-bottom: 5px;'>下週走勢決策樹與操作腳本</h6>
+                    <h6 style='margin-bottom: 5px;'>下個交易日走勢決策樹與操作腳本</h6>
                     <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
                     <!-- 根據數據，繪製 ASCII Art 決策樹 (包含強勢軋空/量縮換手/籌碼背離 三種情境) -->
                     </pre>
@@ -346,7 +477,7 @@ class TaiwanMarketTracker:
                   
                 </div>
                 
-                【今日基礎全景數據 (包含 PE/PB/Yield)】
+                【今日基礎全景數據 (包含 PE/PB/Yield，已含程式計算好的便宜/合理/目標價與狀態，僅供你參考判斷語氣，不用重複輸出)】
                 {df_basic.to_string(index=False)}
                 
                 【原始官方公告與新聞】
@@ -423,6 +554,7 @@ class TaiwanMarketTracker:
     def send_email_notify(self, df_basic, core_data_dict, today_str):
         if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return
         
+        table_html = self.build_basic_table_html(df_basic)
         analysis_html = self.get_news_and_analysis(df_basic, core_data_dict)
         msg = MIMEMultipart('related')
         msg['Subject'] = f"📊 【AI 量化投資組合決策矩陣】 {today_str}"
@@ -431,7 +563,7 @@ class TaiwanMarketTracker:
         error_banner = ""
         if self.fetch_errors:
             error_items = "".join([f"<li>{e}</li>" for e in self.fetch_errors])
-            error_banner = f'''<div style="background-color:#fff3cd; border:1px solid #ffeeba; padding:10px 15px; border-radius:5px; margin-bottom:15px; font-size:12px;"><b>⚠️ 本次執行有資料抓取異常 (AI 將以備援數據推估)：</b><ul style="margin:6px 0 0 20px;">{error_items}</ul></div>'''
+            error_banner = f'''<div style="background-color:#fff3cd; border:1px solid #ffeeba; padding:10px 15px; border-radius:5px; margin-bottom:15px; font-size:12px;"><b>⚠️ 本次執行有資料抓取異常 (以下標的可能使用備援價格，估值可能失準)：</b><ul style="margin:6px 0 0 20px;">{error_items}</ul></div>'''
 
         html = f'''
         <html><head><style>
@@ -439,6 +571,9 @@ class TaiwanMarketTracker:
         </style></head><body>
           <h2>📈 AI 投資組合動態儀表板 ({today_str})</h2>
           {error_banner}
+          <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
+            {table_html}
+          </div>
           {analysis_html}
         </body></html>
         '''
