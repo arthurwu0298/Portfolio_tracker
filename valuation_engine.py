@@ -1,5 +1,6 @@
 # valuation_engine.py
 import io
+import math
 import requests
 import pandas as pd
 import numpy as np
@@ -17,11 +18,7 @@ class FinMindValuationEngine:
     def _init_cache_table(self):
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS finmind_cache (
-                stock_id TEXT, dataset TEXT, fetched_at TEXT, data_json TEXT, PRIMARY KEY (stock_id, dataset)
-            )
-        ''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS finmind_cache (stock_id TEXT, dataset TEXT, fetched_at TEXT, data_json TEXT, PRIMARY KEY (stock_id, dataset))''')
         conn.commit()
         conn.close()
 
@@ -43,8 +40,7 @@ class FinMindValuationEngine:
         try:
             conn = sqlite3.connect(self.db_file)
             cursor = conn.cursor()
-            cursor.execute('''INSERT OR REPLACE INTO finmind_cache (stock_id, dataset, fetched_at, data_json) VALUES (?, ?, ?, ?)''', 
-                           (data_id, dataset, datetime.now().isoformat(), df.to_json()))
+            cursor.execute('''INSERT OR REPLACE INTO finmind_cache (stock_id, dataset, fetched_at, data_json) VALUES (?, ?, ?, ?)''', (data_id, dataset, datetime.now().isoformat(), df.to_json()))
             conn.commit()
             conn.close()
         except: pass
@@ -75,61 +71,6 @@ class FinMindValuationEngine:
             return df[df['date'] >= one_yr_ago]["stock_and_cache_dividend"].sum()
         except: return 0.0
 
-    def get_stock_dividend_info(self, stock_id):
-        df = self._fetch_data("TaiwanStockDividend", stock_id, years_back=2)
-        if df.empty or "year" not in df.columns: return 0.0, 0.0, 0.0
-        try:
-            df = df.copy()
-            df["year_int"] = pd.to_numeric(df["year"], errors="coerce")
-            df = df.dropna(subset=["year_int"]).sort_values("year_int")
-            if df.empty: return 0.0, 0.0, 0.0
-            latest = df.iloc[-1]
-            div_year = int(latest["year_int"])
-            stock_div = float(latest.get("StockEarningsDistribution", 0) or 0) + float(latest.get("StockStatutorySurplus", 0) or 0)
-            cash_div = float(latest.get("CashEarningsDistribution", 0) or 0) + float(latest.get("CashStatutorySurplus", 0) or 0)
-            eps_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=3)
-            year_eps = 0.0
-            if not eps_df.empty and "type" in eps_df.columns:
-                eps_rows = eps_df[eps_df["type"] == "EPS"].copy()
-                if not eps_rows.empty:
-                    eps_rows["date"] = pd.to_datetime(eps_rows["date"])
-                    year_eps = eps_rows[eps_rows["date"].dt.year == div_year]["value"].sum()
-            return round(stock_div, 3), round(cash_div, 3), round(year_eps, 3)
-        except: return 0.0, 0.0, 0.0
-
-    def get_annualized_eps(self, stock_id):
-        df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=2)
-        if df.empty or "type" not in df.columns: return 0.0
-        try:
-            eps_df = df[df["type"] == "EPS"].copy()
-            if eps_df.empty: return 0.0
-            eps_df["date"] = pd.to_datetime(eps_df["date"])
-            eps_df = eps_df.sort_values("date")
-            this_year = datetime.now().year
-            this_year_rows = eps_df[eps_df["date"].dt.year == this_year]
-            if not this_year_rows.empty:
-                ytd_eps = this_year_rows["value"].sum()
-                return round(ytd_eps * (4 / len(this_year_rows)), 2)
-            last_year_rows = eps_df[eps_df["date"].dt.year == this_year - 1]
-            if not last_year_rows.empty: return round(last_year_rows["value"].sum(), 2)
-            return 0.0
-        except: return 0.0
-
-    def get_5yr_average_eps(self, stock_id):
-        df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=6)
-        if df.empty or "type" not in df.columns: return 0.0
-        try:
-            eps_df = df[df["type"] == "EPS"].copy()
-            if eps_df.empty: return 0.0
-            eps_df["date"] = pd.to_datetime(eps_df["date"])
-            eps_df = eps_df.sort_values("date")
-            last_20_q = eps_df.tail(20)
-            if len(last_20_q) > 0:
-                avg_yearly_eps = (last_20_q["value"].sum() / len(last_20_q)) * 4
-                return round(avg_yearly_eps, 2)
-            return 0.0
-        except: return 0.0
-
     def calc_pe_valuation(self, stock_id, current_price, current_pe):
         if current_price <= 0 or current_pe <= 0: return 0, 0, 0, None
         df = self._fetch_data("TaiwanStockPER", stock_id, years_back=5)
@@ -138,8 +79,7 @@ class FinMindValuationEngine:
         valid_pe = df[df["PER"] > 0]["PER"]
         if valid_pe.empty: return 0, 0, 0, None
         pe_20, pe_50, pe_80 = np.percentile(valid_pe, 20), np.percentile(valid_pe, 50), np.percentile(valid_pe, 80)
-        current_percentile = round((valid_pe < current_pe).mean() * 100, 1)
-        return round(ttm_eps * pe_20, 1), round(ttm_eps * pe_50, 1), round(ttm_eps * pe_80, 1), current_percentile
+        return round(ttm_eps * pe_20, 1), round(ttm_eps * pe_50, 1), round(ttm_eps * pe_80, 1), None
 
     def calc_pb_valuation(self, stock_id, current_price, current_pb):
         if current_price <= 0 or current_pb <= 0: return 0, 0, 0, None
@@ -149,73 +89,278 @@ class FinMindValuationEngine:
         valid_pb = df[df["PBR"] > 0]["PBR"]
         if valid_pb.empty: return 0, 0, 0, None
         pb_20, pb_50, pb_80 = np.percentile(valid_pb, 20), np.percentile(valid_pb, 50), np.percentile(valid_pb, 80)
-        current_percentile = round((valid_pb < current_pb).mean() * 100, 1)
-        return round(current_bvps * pb_20, 1), round(current_bvps * pb_50, 1), round(current_bvps * pb_80, 1), current_percentile
+        return round(current_bvps * pb_20, 1), round(current_bvps * pb_50, 1), round(current_bvps * pb_80, 1), None
 
-    def get_revenue_momentum(self, stock_id):
-        df = self._fetch_data("TaiwanStockMonthRevenue", stock_id, years_back=2)
-        if df.empty or "revenue" not in df.columns: return None
-        try:
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.sort_values('date')
-            df['yoy'] = df['revenue'].pct_change(periods=12) * 100
-            recent = df['yoy'].dropna()
-            if len(recent) < 4: return None
-            return {"latest_yoy": round(recent.iloc[-1], 1), "accelerating": bool(recent.iloc[-1] > recent.iloc[-4])}
-        except: return None
-
-    # ---------- 新增：動態抓取歷史殖利率區間 ----------
     def calc_yield_percentile_bounds(self, stock_id):
-        """
-        自動抓近5年歷史殖利率，回傳 20/50/80 百分位數作為 便宜/合理/目標 殖利率
-        (殖利率越高代表越便宜，所以便宜價對應 80 百分位)
-        回傳: (便宜殖利率, 合理殖利率, 目標殖利率)
-        """
         df = self._fetch_data("TaiwanStockPER", stock_id, years_back=5)
         if df.empty or "dividend_yield" not in df.columns: return 0.0, 0.0, 0.0
         try:
             valid_yields = df[df["dividend_yield"] > 0]["dividend_yield"]
             if valid_yields.empty: return 0.0, 0.0, 0.0
-            
-            y_target = round(np.percentile(valid_yields, 20), 2)
-            y_fair = round(np.percentile(valid_yields, 50), 2)
-            y_cheap = round(np.percentile(valid_yields, 80), 2)
-            return y_cheap, y_fair, y_target
+            return round(np.percentile(valid_yields, 80), 2), round(np.percentile(valid_yields, 50), 2), round(np.percentile(valid_yields, 20), 2)
         except: return 0.0, 0.0, 0.0
 
-    # ---------- 新增：趨勢乖離法 ----------
     def calc_price_trend_valuation(self, stock_id, current_price):
-        """
-        給0050、006208、0052這類「報酬主要來自成分股資本利得」的市值/科技型ETF使用。
-        """
         df = self._fetch_data("TaiwanStockPrice", stock_id, years_back=5)
-        if df.empty or "close" not in df.columns:
-            return 0, 0, 0, 0.0, None
+        if df.empty or "close" not in df.columns: return 0, 0, 0, 0.0, None
         try:
-            df = df.copy()
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.sort_values("date")
             df["close"] = pd.to_numeric(df["close"], errors="coerce")
             df = df.dropna(subset=["close"])
             df["ma200"] = df["close"].rolling(window=200).mean()
             df["deviation"] = (df["close"] - df["ma200"]) / df["ma200"] * 100
             df = df.dropna(subset=["deviation"])
-            if df.empty:
-                return 0, 0, 0, 0.0, None
-
+            if df.empty: return 0, 0, 0, 0.0, None
             current_ma200 = df["ma200"].iloc[-1]
-            if current_ma200 <= 0:
-                return 0, 0, 0, 0.0, None
+            if current_ma200 <= 0: return 0, 0, 0, 0.0, None
+            p20, p50, p80 = np.percentile(df["deviation"], 20), np.percentile(df["deviation"], 50), np.percentile(df["deviation"], 80)
+            return round(current_ma200 * (1 + p20 / 100), 1), round(current_ma200 * (1 + p50 / 100), 1), round(current_ma200 * (1 + p80 / 100), 1), 0.0, None
+        except: return 0, 0, 0, 0.0, None
 
-            p20_dev = np.percentile(df["deviation"], 20)
-            p50_dev = np.percentile(df["deviation"], 50)
-            p80_dev = np.percentile(df["deviation"], 80)
-            cheap_price = round(current_ma200 * (1 + p20_dev / 100), 1)
-            fair_price = round(current_ma200 * (1 + p50_dev / 100), 1)
-            target_price = round(current_ma200 * (1 + p80_dev / 100), 1)
+    def _get_profile(self, stock_id):
+        s = str(stock_id)
+        if s.startswith('28') or s.startswith('58'): return {'key': 'financial', 'is_cyclical': False}
+        if s in ['2408', '2344', '2451', '2603', '2609', '2002']: return {'key': 'cyclical', 'is_cyclical': True}
+        if s.startswith('23') or s in ['2480', '6146']: return {'key': 'tech', 'is_cyclical': False}
+        return {'key': 'general', 'is_cyclical': False}
 
-            current_deviation = round((current_price - current_ma200) / current_ma200 * 100, 2)
-            current_percentile = round((df["deviation"] < current_deviation).mean() * 100, 1)
-            return cheap_price, fair_price, target_price, current_deviation, current_percentile
-        except Exception:
-            return 0, 0, 0, 0.0, None
+    def estimate_forward_eps(self, stock_id):
+        fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=4)
+        mr_df = self._fetch_data("TaiwanStockMonthRevenue", stock_id, years_back=2)
+        
+        if fs_df.empty: return 0.0, 0.0
+        
+        def get_type_series(t_list):
+            df = fs_df[fs_df["type"].isin(t_list)].copy()
+            if df.empty: return pd.DataFrame()
+            df['date'] = pd.to_datetime(df['date'])
+            return df.sort_values('date')
+
+        eps_data = get_type_series(['EPS', 'BasicEarningsLossPerShare'])
+        rev_data = get_type_series(['Revenue', 'OperatingRevenue', 'NetRevenue'])
+        op_data = get_type_series(['OperatingIncome', 'OperatingProfit'])
+        tax_data = get_type_series(['IncomeTaxExpense', 'TaxExpense'])
+        pretax_data = get_type_series(['IncomeBeforeTax', 'ProfitBeforeTax'])
+        net_data = get_type_series(['IncomeAfterTaxes', 'NetIncome'])
+        
+        ttm_eps, eps_yoy, eps_ytd_val, eps_ytd_periods, eps_latest_q = 0.0, None, 0.0, 0, 0.0
+        eps_history = []
+        if not eps_data.empty:
+            eps_history = eps_data['value'].tolist()[-20:] 
+            last_8 = eps_data.tail(8)
+            if len(last_8) >= 4:
+                ttm_eps = last_8.tail(4)['value'].sum()
+                if len(last_8) == 8:
+                    prev_ttm = last_8.head(4)['value'].sum()
+                    if prev_ttm != 0: eps_yoy = (ttm_eps - prev_ttm) / abs(prev_ttm)
+            
+            curr_year = datetime.now().year
+            ytd_rows = eps_data[eps_data['date'].dt.year == curr_year]
+            if ytd_rows.empty: 
+                curr_year -= 1
+                ytd_rows = eps_data[eps_data['date'].dt.year == curr_year]
+            eps_ytd_periods = len(ytd_rows)
+            eps_ytd_val = ytd_rows['value'].sum()
+            eps_latest_q = eps_data.iloc[-1]['value']
+
+        rev_ttm_yoy, cagr, rev_ttm = None, None, 0.0
+        if not rev_data.empty and len(rev_data) >= 4:
+            last_8_rev = rev_data.tail(8)
+            rev_ttm = last_8_rev.tail(4)['value'].sum()
+            if len(last_8_rev) == 8:
+                prev_rev_ttm = last_8_rev.head(4)['value'].sum()
+                if prev_rev_ttm != 0: rev_ttm_yoy = (rev_ttm - prev_rev_ttm) / abs(prev_rev_ttm)
+            if len(rev_data) >= 16:
+                r0 = rev_data.tail(4)['value'].sum()
+                r3 = rev_data.iloc[-16:-12]['value'].sum()
+                if r0 > 0 and r3 > 0: cagr = (r0 / r3) ** (1/3) - 1
+
+        mr_ytd_yoy, est_full_rev = None, None
+        if not mr_df.empty and 'revenue' in mr_df.columns:
+            mr_df['date'] = pd.to_datetime(mr_df['date'])
+            mr_df = mr_df.sort_values('date')
+            cur_y = mr_df['date'].dt.year.max()
+            cur_rows = mr_df[mr_df['date'].dt.year == cur_y]
+            latest_m = cur_rows['date'].dt.month.max()
+            if latest_m:
+                cur_ytd = cur_rows[cur_rows['date'].dt.month <= latest_m]['revenue'].sum()
+                prev_ytd = mr_df[(mr_df['date'].dt.year == cur_y - 1) & (mr_df['date'].dt.month <= latest_m)]['revenue'].sum()
+                if prev_ytd > 0:
+                    mr_ytd_yoy = (cur_ytd - prev_ytd) / prev_ytd
+                    prev_remain = mr_df[(mr_df['date'].dt.year == cur_y - 1) & (mr_df['date'].dt.month > latest_m)]['revenue'].sum()
+                    est_full_rev = cur_ytd + prev_remain * (1 + mr_ytd_yoy)
+
+        purified_eps, net_margin = ttm_eps, 0.0
+        if rev_ttm > 0 and not net_data.empty:
+            ni4 = net_data.tail(4)['value'].sum()
+            net_margin = ni4 / rev_ttm
+            if not op_data.empty and not pretax_data.empty and not tax_data.empty:
+                op4 = op_data.tail(4)['value'].sum()
+                pt4 = pretax_data.tail(4)['value'].sum()
+                tax4 = tax_data.tail(4)['value'].sum()
+                real_tax = min(0.35, max(0.0, tax4/pt4)) if pt4 > 0 else 0.20
+                nopat = op4 * (1 - real_tax)
+                shares_out = ni4 / ttm_eps if ttm_eps != 0 else 1
+                if shares_out != 0: purified_eps = nopat / shares_out
+
+        candidates = []
+        if eps_yoy is not None: candidates.append((eps_yoy, 0.50))
+        if mr_ytd_yoy is not None: candidates.append((mr_ytd_yoy, 0.45))
+        if rev_ttm_yoy is not None: candidates.append((rev_ttm_yoy, 0.25))
+        if cagr is not None: candidates.append((cagr, 0.15))
+        
+        raw_g = 0.05
+        if candidates:
+            ws = sum(w for v, w in candidates)
+            raw_g = sum(v * w for v, w in candidates) / ws if ws > 0 else 0.05
+            
+        profile = self._get_profile(stock_id)
+        dol = 1.3 if profile['key'] in ['tech', 'hardware'] else (1.1 if profile['key'] in ['consumer', 'utility'] else 1.0)
+        leveraged_g = raw_g * dol
+        
+        cap = 0.35 if profile['key'] in ['tech', 'healthcare'] else (0.12 if profile['key'] == 'utility' else 0.25)
+        floor = -0.30 if profile['is_cyclical'] else -0.25
+        g = max(floor, min(cap, leveraged_g))
+
+        base_eps = ttm_eps
+        if profile['is_cyclical'] and ttm_eps > 0 and len(eps_history) >= 8:
+            annuals = [sum(eps_history[i:i+4]) for i in range(0, len(eps_history)-3, 4) if sum(eps_history[i:i+4]) > 0]
+            if len(annuals) >= 3:
+                mean_eps = sum(annuals) / len(annuals)
+                if ttm_eps > mean_eps * 1.5:
+                    base_eps = mean_eps
+
+        eps_est = base_eps * (1 + g) if base_eps > 0 else 0
+        
+        if eps_ytd_val > 0 and eps_ytd_periods > 0 and ttm_eps > 0:
+            prev_remain = max(0, ttm_eps - eps_ytd_val)
+            eps_est = eps_ytd_val + prev_remain * (1 + g)
+        elif est_full_rev and net_margin > 0 and rev_ttm > 0:
+            core_eps = purified_eps if purified_eps > 0 else ttm_eps
+            eps_rev_ratio = core_eps / rev_ttm
+            fwd_eps_from_rev = eps_rev_ratio * est_full_rev
+            if ttm_eps <= 0 and fwd_eps_from_rev > 0:
+                eps_est = fwd_eps_from_rev
+            elif ttm_eps > 0 and abs(fwd_eps_from_rev - ttm_eps) / ttm_eps <= 0.5:
+                eps_est = fwd_eps_from_rev
+
+        if ttm_eps > 0:
+            eps_est = max(ttm_eps * 0.3, min(eps_est, max(ttm_eps * 1.8, ttm_eps + 3)))
+        else:
+            eps_est = min(eps_est, 3.0)
+
+        if eps_est <= 0: return 0.0, 0.0
+        return eps_est, g
+
+    def calc_ddm_valuation(self, stock_id, current_price, payout_ratio):
+        if current_price <= 0 or payout_ratio <= 0:
+            return 0, 0, 0, None
+            
+        fwd_eps, g_S = self.estimate_forward_eps(stock_id)
+        div_total = self.get_recent_dividend(stock_id)
+        
+        ttm_eps = fwd_eps / (1 + g_S) if g_S != -1 else 0
+        D0 = div_total if div_total > 0 else (ttm_eps * payout_ratio)
+        if D0 <= 0: return 0, 0, 0, None
+
+        g_L = 0.02  
+        g_S = max(-0.25, min(0.35, g_S)) 
+        H = 2.5 
+        k_cheap, k_fair, k_exp = 0.075, 0.060, 0.045
+        
+        if g_L >= k_exp - 0.015:
+            shift = g_L - (k_exp - 0.015)
+            k_cheap += shift; k_fair += shift; k_exp += shift
+
+        numerator = D0 * (1 + g_L) + D0 * H * (g_S - g_L)
+        if numerator <= 0: return 0, 0, 0, None
+             
+        return round(numerator / (k_cheap - g_L), 1), round(numerator / (k_fair - g_L), 1), round(numerator / (k_exp - g_L), 1), None
+
+    # ==============================================================
+    # 🚀 新增 1：葛拉漢公式 (Graham Number) 防呆下限
+    # ==============================================================
+    def calc_graham_number(self, current_price, current_pe, current_pb):
+        """計算葛拉漢公式防呆下限，不適用於獲利或淨值為負之標的"""
+        if current_price <= 0 or current_pe <= 0 or current_pb <= 0:
+            return 0.0
+        
+        eps = current_price / current_pe
+        bvps = current_price / current_pb
+        
+        if eps > 0 and bvps > 0:
+            return round(math.sqrt(22.5 * eps * bvps), 1)
+        return 0.0
+
+    # ==============================================================
+    # 🚀 新增 2：超額報酬模型 (Residual Income Model)
+    # ==============================================================
+    def _get_3yr_avg_roe(self, stock_id):
+        """計算近三年 ROE 加權移動平均，濾除單季業外損益"""
+        fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=4)
+        if fs_df.empty: return 0.0
+        
+        ni_data = fs_df[fs_df["type"].isin(['IncomeAfterTaxes', 'NetIncome'])].copy()
+        eq_data = fs_df[fs_df["type"].isin(['Equity', 'TotalEquity'])].copy()
+        
+        if ni_data.empty or eq_data.empty: return 0.0
+        
+        ni_data['date'] = pd.to_datetime(ni_data['date'])
+        eq_data['date'] = pd.to_datetime(eq_data['date'])
+        ni_data = ni_data.sort_values('date')
+        eq_data = eq_data.sort_values('date')
+        
+        # 抓取近三年 (約 12 季)
+        last_12_ni = ni_data.tail(12)
+        last_12_eq = eq_data.tail(12)
+        
+        roes = []
+        for i in range(3):
+            ni_yr = last_12_ni.iloc[-(i*4+4):-i*4] if i > 0 else last_12_ni.iloc[-4:]
+            eq_yr = last_12_eq.iloc[-(i*4+4):-i*4] if i > 0 else last_12_eq.iloc[-4:]
+            if not ni_yr.empty and not eq_yr.empty:
+                ni_sum = ni_yr['value'].sum()
+                eq_avg = eq_yr['value'].mean()
+                if eq_avg > 0:
+                    roes.append(ni_sum / eq_avg)
+        
+        if not roes: return 0.0
+        
+        # 近 3 年加權：近一年 50%, 前一年 30%, 大前一年 20%
+        weights = [0.5, 0.3, 0.2][:len(roes)]
+        weight_sum = sum(weights)
+        avg_roe = sum(r * w for r, w in zip(roes, weights)) / weight_sum
+        
+        # 設定合理天花板防呆，避免極端值
+        return max(0.0, min(avg_roe, 0.25))
+
+    def calc_residual_income_valuation(self, stock_id, current_price, current_pb):
+        """利用超額報酬模型推算合理淨值比 (Target P/B)"""
+        if current_price <= 0 or current_pb <= 0:
+            return 0, 0, 0, None
+            
+        bvps = current_price / current_pb
+        roe = self._get_3yr_avg_roe(stock_id)
+        
+        if roe <= 0:
+            return 0, 0, 0, None
+            
+        g = 0.02 # 長期永續成長率 2%
+        
+        # 金融業股東權益成本 (Cost of Equity)
+        # 設定：便宜區(要求嚴格 8.5%), 合理區 7.0%, 昂貴區(寬鬆要求 5.5%)
+        ke_cheap = 0.085
+        ke_fair = 0.070
+        ke_exp = 0.055
+        
+        # 計算 Target P/B = 1 + (ROE - Ke) / (Ke - g)
+        def get_target_pb(ke):
+            if ke <= g: return 1.0 # 數學防呆
+            target_pb = 1 + (roe - ke) / (ke - g)
+            # 設定銀行業淨值比地板為 0.4
+            return max(0.4, target_pb)
+            
+        cheap_price = round(bvps * get_target_pb(ke_cheap), 1)
+        fair_price = round(bvps * get_target_pb(ke_fair), 1)
+        exp_price = round(bvps * get_target_pb(ke_exp), 1)
+        
+        return cheap_price, fair_price, exp_price, {"roe": roe, "bvps": bvps}

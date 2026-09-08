@@ -26,6 +26,7 @@ METHOD_MAP = {
     "pb": "淨值比法",
     "etf_yield": "歷史殖利率",
     "trend": "趨勢乖離法",
+    "rim": "超額報酬模型",
     "manual": "手動設定"
 }
 
@@ -140,22 +141,84 @@ class TaiwanMarketTracker:
             method_ch = METHOD_MAP.get(v_method, "手動設定")
             extra_note = item.get("note", "")
 
+            # ==============================================================
+            # 🚀 核心橋接邏輯：強制交給 Python 算絕對數字，接通 RIM 與防呆模型
+            # ==============================================================
+            cheap_price, fair_price, target_price = 0.0, 0.0, 0.0
+            
+            if v_method == "pe":
+                res = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
+                if res: cheap_price, fair_price, target_price, _ = res
+            elif v_method == "pb":
+                res = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
+                if res: cheap_price, fair_price, target_price, _ = res
+            elif v_method == "trend":
+                res = self.valuation_engine.calc_price_trend_valuation(c, price)
+                if res: cheap_price, fair_price, target_price, _, _ = res
+            elif v_method == "rim":
+                # 橋接超額報酬模型 (Residual Income Model)
+                res = self.valuation_engine.calc_residual_income_valuation(c, price, current_pb)
+                if res and len(res) == 4:
+                    cheap_price, fair_price, target_price, _ = res
+                method_ch = "超額報酬模型(RIM)"
+            elif v_method == "yield":
+                # 橋接 H-Model 雙階股利折現模型
+                payout_ratio = item.get("payout_ratio", 0.5) 
+                res = self.valuation_engine.calc_ddm_valuation(c, price, payout_ratio)
+                if res and len(res) == 4:
+                    cheap_price, fair_price, target_price, _ = res
+                method_ch = "H-Model 雙階折現"
+            elif v_method == "etf_yield":
+                div_total = self.valuation_engine.get_recent_dividend(c)
+                y_cheap, y_fair, y_target = self.valuation_engine.calc_yield_percentile_bounds(c)
+                if "target_yields" in item:
+                    y_cheap = item["target_yields"].get("cheap", y_cheap)
+                    y_fair = item["target_yields"].get("fair", y_fair)
+                    y_target = item["target_yields"].get("target", y_target)
+                if div_total > 0 and y_cheap > 0:
+                    cheap_price = round(div_total / (y_cheap / 100), 1)
+                    fair_price = round(div_total / (y_fair / 100), 1)
+                    target_price = round(div_total / (y_target / 100), 1)
+
+            # 🛡️ 葛拉漢公式防呆下限 (非金融股、非ETF才啟動)
+            is_financial_or_etf = str(c).startswith('28') or str(c).startswith('58') or str(c).startswith('00')
+            if not is_financial_or_etf and v_method not in ["trend", "etf_yield", "manual"] and price > 0:
+                graham_floor = self.valuation_engine.calc_graham_number(price, current_pe, current_pb)
+                if graham_floor > 0 and (cheap_price < graham_floor or cheap_price == 0):
+                    cheap_price = max(cheap_price, graham_floor)
+                    fair_price = max(fair_price, graham_floor * 1.2)
+                    target_price = max(target_price, graham_floor * 1.5)
+                    extra_note += f"[葛拉漢底線保護: {graham_floor}]"
+
+            # 嚴格由 Python 判定當前位階
+            current_status = "合理續抱"
+            if price > 0 and fair_price > 0:
+                if price <= cheap_price:
+                    current_status = "便宜加碼"
+                elif price >= target_price:
+                    current_status = "達標停利"
+                elif price >= fair_price + (target_price - fair_price) * 0.7:
+                    current_status = "偏高留意"
+
             total_cost += (s * cp)
             total_mkt += (s * price)
 
             records.append({
                 "代碼": c, "名稱": item["name"], "現價": price, 
                 "本益比(PE)": current_pe, "淨值比(PB)": current_pb, "殖利率(%)": dyield,
-                "指定估價法": method_ch, "自訂備註與限制": extra_note
+                "指定估價法": method_ch, 
+                "便宜價": cheap_price, "合理價": fair_price, "昂貴(目標)價": target_price,
+                "當前狀態": current_status,
+                "自訂備註與限制": extra_note
             })
 
         self.save_to_db(total_cost, total_mkt, total_mkt + CASH_RESERVE, CASH_RESERVE, total_mkt - total_cost, round(((total_mkt - total_cost) / total_cost) * 100, 2) if total_cost > 0 else 0)
         return pd.DataFrame(records)
 
     def fetch_advanced_quant_data(self):
-        print("🔍 [階段二] 掃描核心持股 (is_core=True) 並抓取深度量化/籌碼數據...")
+        print("🔍 [階段二] 掃描核心持股 (is_core=True) 並啟動 V9 籌碼動能計分引擎...")
         core_data = {}
-        start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
         
         for item in PORTFOLIO:
             if not item.get("is_core", False):
@@ -166,69 +229,176 @@ class TaiwanMarketTracker:
             print(f"  -> 處理核心標的: {ticker_name} ({c})")
             quant_info = {"name": ticker_name, "code": c}
             
+            price, ma20, chg_pct, vol_ratio = 0.0, 0.0, 0.0, 1.0
             try:
                 yf_ticker = f"{c}.TW" if item["market"] == "TWSE" else f"{c}.TWO"
                 hist = yf.Ticker(yf_ticker).history(period="3mo")
-                if not hist.empty:
+                if not hist.empty and len(hist) > 25:
                     hist.ta.kd(append=True)
                     hist.ta.rsi(length=14, append=True)
                     hist.ta.sma(length=20, append=True)
                     
                     latest = hist.iloc[-1]
-                    quant_info["KD值"] = f"K: {latest.get('STOCHk_14_3_3', 0):.1f} / D: {latest.get('STOCHd_14_3_3', 0):.1f}"
-                    quant_info["RSI(14)"] = f"{latest.get('RSI_14', 0):.1f}"
-                    sma20 = latest.get('SMA_20', 1)
-                    bias = ((latest['Close'] - sma20) / sma20) * 100
-                    quant_info["20MA乖離率(BIAS)"] = f"{bias:.2f}%"
-                    quant_info["最新成交量"] = f"{latest['Volume']/1000:.0f} 張"
-            except Exception as e:
-                quant_info["技術面抓取異常"] = str(e)
+                    prev = hist.iloc[-2]
+                    
+                    price = float(latest['Close'])
+                    ma20 = float(latest.get('SMA_20', price))
+                    chg_pct = (price - prev['Close']) / prev['Close'] if prev['Close'] > 0 else 0
+                    
+                    vols = hist['Volume'].tolist()
+                    rv = sum(vols[-5:]) / 5
+                    pv = sum(vols[-25:-5]) / 20
+                    vol_ratio = rv / pv if pv > 0 else 1.0
+                    
+                    quant_info["技術面狀態"] = f"現價:{price:.1f}, MA20:{ma20:.1f}, 近日變化:{chg_pct*100:.1f}%, 量能比:{vol_ratio:.2f}x"
+                    quant_info["技術指標"] = f"RSI(14): {latest.get('RSI_14', 0):.1f}"
+            except:
+                pass
 
             if FINMIND_TOKEN:
+                f_net, t_net, d_net, all_net = 0, 0, 0, 0
+                f_cons, t_cons = 0, 0
+                f_score, t_score, d_score = 50, 50, 50
                 try:
                     res_inst = requests.get(
                         "https://api.finmindtrade.com/api/v4/data",
                         params={"dataset": "InstitutionalInvestorsBuySell", "data_id": c, "start_date": start_date, "token": FINMIND_TOKEN},
                         timeout=10
                     ).json()
-                    if res_inst.get("msg") == "success" and res_inst.get("data"):
-                        df_inst = pd.DataFrame(res_inst["data"])
-                        latest_date = df_inst['date'].max()
-                        latest_inst = df_inst[df_inst['date'] == latest_date]
-                        net_buy = latest_inst.groupby('name')['buy_sell'].sum().to_dict()
-                        foreign = net_buy.get('外資及陸資投資', net_buy.get('外資及陸資(不含外資自營商)', 0))
-                        trust = net_buy.get('投信', 0)
-                        quant_info["三大法人最新動向日期"] = latest_date
-                        quant_info["外資買賣超(張)"] = f"{foreign / 1000:.0f}"
-                        quant_info["投信買賣超(張)"] = f"{trust / 1000:.0f}"
-                except Exception as e:
-                    self.fetch_errors.append(f"{ticker_name} 法人籌碼抓取失敗: {e}")
+                    if res_inst.get("data"):
+                        df_inst = pd.DataFrame(res_inst["data"]).sort_values('date', ascending=False)
+                        
+                        def get_trend(name):
+                            rows = df_inst[df_inst['name'] == name]
+                            if rows.empty: return 0, 0, 50
+                            dates = sorted(rows['date'].unique(), reverse=True)
+                            series = []
+                            for dt in dates[:20]:
+                                d_rows = rows[rows['date'] == dt]
+                                net = (pd.to_numeric(d_rows['buy']).sum() - pd.to_numeric(d_rows['sell']).sum())
+                                series.append(net)
+                            
+                            curr_net = round(series[0] / 1000) if series else 0
+                            days = 0
+                            if series and series[0] > 0:
+                                for v in series:
+                                    if v > 0: days += 1
+                                    else: break
+                            elif series and series[0] < 0:
+                                for v in series:
+                                    if v < 0: days -= 1
+                                    else: break
+                                    
+                            score = 100 if days >= 3 else 80 if days > 0 else 50 if days == 0 else 20 if days > -3 else 0
+                            return curr_net, days, score
 
+                        f_net1, f_days1, _ = get_trend('外資及陸資投資')
+                        f_net2, f_days2, _ = get_trend('外資及陸資(不含外資自營商)')
+                        f_net = f_net1 if f_net1 != 0 else f_net2
+                        f_cons = f_days1 if f_days1 != 0 else f_days2
+                        f_score = 100 if f_cons >= 3 else 80 if f_cons > 0 else 50 if f_cons == 0 else 20 if f_cons > -3 else 0
+                        
+                        t_net, t_cons, t_score = get_trend('投信')
+                        
+                        d_self, d_days_s, _ = get_trend('自營商(自行買賣)')
+                        d_hedg, d_days_h, _ = get_trend('自營商(避險)')
+                        d_net = d_self + d_hedg
+                        d_days = d_days_s if d_self != 0 else d_days_h
+                        d_score = 90 if d_days >= 2 else 70 if d_days > 0 else 30 if -2 < d_days < 0 else 10 if d_days <= -2 else 50
+                        
+                        all_net = f_net + t_net + d_net
+                except:
+                    pass
+
+                mg_chg, ss_chg, sr_ratio = 0, 0, 0
                 try:
                     res_margin = requests.get(
                         "https://api.finmindtrade.com/api/v4/data",
                         params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": c, "start_date": start_date, "token": FINMIND_TOKEN},
                         timeout=10
                     ).json()
-                    if res_margin.get("msg") == "success" and res_margin.get("data"):
-                        df_margin = pd.DataFrame(res_margin["data"])
-                        latest_margin = df_margin.iloc[-1]
-                        quant_info["融資餘額(張)"] = f"{latest_margin.get('MarginPurchaseBalance', 0)}"
-                        quant_info["融券餘額(張)"] = f"{latest_margin.get('ShortSaleBalance', 0)}"
-                except Exception as e:
-                    self.fetch_errors.append(f"{ticker_name} 融資券抓取失敗: {e}")
+                    if res_margin.get("data"):
+                        df_mg = pd.DataFrame(res_margin["data"]).sort_values('date', ascending=False)
+                        if not df_mg.empty:
+                            latest_mg = df_mg.iloc[0]
+                            mg_bal = float(latest_mg.get('MarginPurchaseTodayBalance', 0))
+                            mg_prev = float(latest_mg.get('MarginPurchaseYesterdayBalance', mg_bal))
+                            mg_chg = mg_bal - mg_prev
+                            
+                            ss_bal = float(latest_mg.get('ShortSaleTodayBalance', 0))
+                            ss_prev = float(latest_mg.get('ShortSaleYesterdayBalance', ss_bal))
+                            ss_chg = ss_bal - ss_prev
+                            
+                            sr_ratio = (ss_bal / mg_bal * 100) if mg_bal > 0 else 0
+                except:
+                    pass
+
+                # ==========================================
+                # 🚀 寫入 V9 籌碼動能計分引擎 (Python 端強制計分)
+                # ==========================================
+                cost_dist = ((price - ma20) / ma20 * 100) if ma20 > 0 else 0
+                
+                inst_score = round((f_score * 0.6) + (t_score * 0.3) + (d_score * 0.1))
+                
+                accum, dist = 0, 0
+                if abs(chg_pct) < 0.02: accum += 20
+                if vol_ratio < 1.1: accum += 20
+                if all_net > 0: accum += 30
+                if mg_chg < 0: accum += 30
+                if chg_pct < 0 and vol_ratio > 1.2: dist += 30
+                if all_net < 0: dist += 30
+                if mg_chg > 0: dist += 40
+                radar_score = accum if accum > dist else (100 - dist)
+                
+                cost_score = 20
+                if 0 <= cost_dist < 5: cost_score = 100
+                elif 5 <= cost_dist < 10: cost_score = 80
+                elif 10 <= cost_dist < 15: cost_score = 60
+                elif 15 <= cost_dist < 20: cost_score = 40
+                elif cost_dist >= 20: cost_score = 20
+                elif -5 < cost_dist < 0: cost_score = 60
+                
+                retail_score, retail_msg = 0, "無明顯特徵"
+                if chg_pct >= 0 and mg_chg <= 0: retail_score = 100; retail_msg = "籌碼沉澱 (價↑資↓)"
+                elif chg_pct < 0 and mg_chg <= 0: retail_score = 80; retail_msg = "恐慌出場 (價↓資↓)"
+                elif chg_pct < 0 and mg_chg > 0: retail_score = 40; retail_msg = "攤平套牢 (價↓資↑)"
+                elif chg_pct >= 0 and mg_chg > 0: retail_score = 20; retail_msg = "散戶追價 (價↑資↑)"
+                
+                short_score = 40
+                if sr_ratio > 20: short_score = 100
+                elif sr_ratio > 10: short_score = 80
+                elif sr_ratio > 5: short_score = 60
+                if ss_chg > 0: short_score = min(100, short_score + 10)
+                
+                contrib = {
+                    "inst": round(inst_score * 0.30),
+                    "radar": round(radar_score * 0.25),
+                    "cost": round(cost_score * 0.20),
+                    "retail": round(retail_score * 0.15),
+                    "short": round(short_score * 0.10)
+                }
+                
+                final_chip_score = sum(contrib.values())
+                
+                # 外資連賣懲罰機制
+                foreign_penalty = 0
+                if f_cons <= -8: foreign_penalty = 25
+                elif f_cons <= -5: foreign_penalty = 15
+                elif f_cons <= -3: foreign_penalty = 8
+                
+                final_chip_score = max(0, final_chip_score - foreign_penalty)
+                chip_status = "✅ 極佳" if final_chip_score >= 81 else "🟢 良好" if final_chip_score >= 61 else "🟡 中性" if final_chip_score >= 41 else "🟠 偏弱" if final_chip_score >= 21 else "🔴 惡化"
+                
+                quant_info["V9籌碼總分"] = f"{final_chip_score}/100 ({chip_status})"
+                quant_info["籌碼細項結構"] = f"法人共識度:{contrib['inst']}/30分, 主力雷達:{contrib['radar']}/25分, 均線安全帶:{contrib['cost']}/20分, 散戶動向:{contrib['retail']}/15分, 軋空潛力:{contrib['short']}/10分"
+                quant_info["散戶狀態判定"] = retail_msg
+                quant_info["外資連續動向"] = f"{'連買' if f_cons > 0 else '連賣'} {abs(f_cons)} 日"
+                quant_info["投信連續動向"] = f"{'連買' if t_cons > 0 else '連賣'} {abs(t_cons)} 日"
 
             core_data[c] = quant_info
             time.sleep(1.5)
 
         return core_data
-
-    def save_to_db(self, tc, tm, tnw, cash, pl, ret):
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute('''INSERT OR REPLACE INTO history (date, total_cost, total_mkt, total_net_worth, cash_reserve, unrealized_pl, return_rate) VALUES (?, ?, ?, ?, ?, ?, ?)''', (datetime.now().strftime("%Y-%m-%d"), tc, tm, tnw, cash, pl, ret))
-        conn.commit()
-        conn.close()
 
     def get_news_and_analysis(self, df_basic, core_data_dict):
         print("📰 [階段三] 抓取官方公告與媒體新聞，啟動 AI 雙層分析...")
@@ -280,7 +450,7 @@ class TaiwanMarketTracker:
                     if k not in ["name", "code"]:
                         core_data_text += f"{k}: {v}\n"
         else:
-            core_data_text = "今日無指定核心持股 (未於 config 設定 is_core: True) 進行深度推演。"
+            core_data_text = "今日無指定核心持股進行深度推演。"
 
         if GEMINI_API_KEY:
             print("🤖 正在呼叫 Gemini API 進行決策矩陣運算...")
@@ -297,15 +467,20 @@ class TaiwanMarketTracker:
                 
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
+                # 🚀 升級 AI Prompt：賦予「左側攔截」與「質化驗證」的嚴格指令
                 prompt = f"""
-                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專家。請根據提供的「基礎全景數據」與「核心股深度量化籌碼」，提供「官方公告」與「媒體新聞」，請根據上述資訊，提供最新最即時投資組合,AI相關台股,台股金融業重點分析並撰寫專屬我的盤後報告，產出專屬的雙層盤後決策報告。
+                你是一位頂尖的量化投資經理與實戰交易員。請根據以下「基礎全景數據」與「核心股深度量化籌碼」，結合新聞動態產出盤後報告。
+                
+                【重要操作紀律】
+                1. 若個股的「當前狀態」顯示為便宜，但其「V9籌碼總分」低於 40 分（惡化/偏弱）或外資出現連續賣超，請在決策樹中強制標示為「左側下殺，暫緩承接，籌碼尚未沉澱」。
+                2. 請比對「估值落差」與新聞事件。如果新聞出現「產能滿載/擴廠/新產品」，請判斷是否能成為支撐目前偏高估值（或提前買進便宜價）的實質護城河。
                 
                 【絕對輸出格式要求】
-                請嚴格依照下方 HTML 與文字結構輸出，不要使用 markdown 語法 (```html) 包裝，直接輸出 HTML：
+                請直接輸出 HTML，不要用 ```html 包裝：
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
                   <p style='font-size: 14px; margin-bottom: 20px;'><b>截至 {today_str_for_prompt} 最新盤後，投資組合綜合評估：</b><br>
-                  <!-- 根據大盤趨勢與投資組合整體狀態，寫約 100 字摘要 --></p>
+                  <!-- 結合大盤與產業輪動，撰寫約 100 字摘要 --></p>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 全投組基礎估值掃描</h4>
                   <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;'>
@@ -317,36 +492,33 @@ class TaiwanMarketTracker:
                       <th style='border: 1px solid #ccc; padding: 8px;'>昂貴(目標)價</th>
                       <th style='border: 1px solid #ccc; padding: 8px;'>當前狀態</th>
                     </tr>
-                    <!-- 根據【基礎全景數據】生成所有標的表格。必須填寫明確估算數字與狀態(如: 便宜加碼、合理續抱、偏高留意) -->
+                    <!-- 嚴格套用下方傳入的【今日基礎全景數據】，絕對禁止重新計算價格！ -->
                   </table>
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 最新即時焦點消息與產業重點分析</h4>
+                  
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>二、 最新即時焦點消息與產業重點分析</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
-                    <!-- 結合新聞與重訊，精煉出 5 到 6 點產業與個股消息。請去除無意義的表單廢話。 -->
+                    <!-- 精煉 4 到 5 點實質產業/重訊動態，並短評對估值的影響 -->
                   </ul>
-                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>二、 核心持股深度多空決策矩陣</h4>
-                  <!-- 針對每一檔【核心股深度量化籌碼】裡的股票，重複以下結構 -->
+                  
+                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>三、 核心持股深度多空決策矩陣</h4>
+                  <!-- 針對每一檔核心股重複以下結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
-                    <h5 style='color: #333; margin-top: 0;'>[填寫股票名稱與代號] 量化籌碼、估值與多空交易決策矩陣</h5>
+                    <h5 style='color: #333; margin-top: 0;'>[股票名稱] V9籌碼與估值矩陣分析</h5>
                     
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
-                       <b>基本面估值：</b> <!-- 簡述 PB/PE 位置與盈虧比 --><br>
-                       <b>技術動能：</b> <!-- 根據傳入的 KD/RSI/乖離率 判斷是否過熱或超賣 --><br>
-                       <b>籌碼結構：</b> <!-- 根據傳入的外資/投信買賣超與融資券，判斷籌碼流向 -->
+                       <b>基本面位階：</b> <!-- 寫出現在處於便宜/合理/昂貴區 --><br>
+                       <b>V9 籌碼動能：</b> <!-- 引用傳入的籌碼分數、散戶狀態與外資動向 --><br>
+                       <b>技術面：</b> <!-- 簡述 MA20 乖離與 RSI -->
                     </p>
                     
                     <h6 style='margin-bottom: 5px;'>下個交易日走勢決策樹與操作腳本</h6>
                     <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
-                    <!-- 根據數據，繪製 ASCII Art 決策樹 (包含強勢軋空/量縮換手/籌碼背離 三種情境) -->
+                    <!-- 依據上方紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境) -->
                     </pre>
-                    
-                    <ul style='font-size: 13px; line-height: 1.6; padding-left: 20px;'>
-                      <!-- 給出這三種情境對應的觸發訊號、防守點位與停利建議 -->
-                    </ul>
                   </div>
-                  
                 </div>
                 
-                【今日基礎全景數據 (包含 PE/PB/Yield)】
+                【今日基礎全景數據】
                 {df_basic.to_string(index=False)}
                 
                 【原始官方公告與新聞】
@@ -357,12 +529,6 @@ class TaiwanMarketTracker:
                 {core_data_text}
                 """
                 
-                # ⬇️ 模型清單更新(2026-09)：gemini-1.5-* 系列已經被Google全面關閉，
-                # 所有請求一律回傳404，留著只是浪費重試次數。gemini-flash-latest
-                # 這種「-latest」別名官方文件明講是指向實驗性模型，正式環境不建議
-                # 使用，速率限制也更嚴格(免費額度可能只有個位數~20次/天)。
-                # 改成明確指定目前still在架、屬於正式版(GA)的機型，優先用便宜的
-                # Flash-Lite顧額度，Flash當備援。
                 target_models = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite']
                 response = None
                 api_call_count = 0 
@@ -376,7 +542,6 @@ class TaiwanMarketTracker:
                                 api_call_count += 1
                                 print(f"➡️ 正在發送第 {api_call_count} 次 API 請求 (目標模型: {model_name}, 重試次數: {attempt})...")
                                 
-                                # 關鍵修正：加入 request_options 延長等待時間至 150 秒，避免 504 Deadline
                                 response = model.generate_content(
                                     prompt, 
                                     safety_settings=safety_settings,
@@ -386,9 +551,6 @@ class TaiwanMarketTracker:
                                 break
                             except Exception as err:
                                 err_str = str(err).lower()
-                                # 修正：「每日額度用完」(429 + per-day/perday) 屬於按天計算的硬限制，
-                                # 等幾十秒重試完全沒用，只會浪費GitHub Actions的執行時間，應該立刻
-                                # 放棄這個模型、切換下一個備援模型，而不是原地重試。
                                 is_daily_quota = "429" in err_str and ("per day" in err_str or "perday" in err_str)
                                 if is_daily_quota:
                                     print(f"⚠️ {model_name} 每日額度已用完(非暫時性限制)，直接切換下一個備援模型...")
