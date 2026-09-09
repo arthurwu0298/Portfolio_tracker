@@ -558,7 +558,8 @@ class TaiwanMarketTracker:
                 for model_name in target_models:
                     try:
                         print(f"嘗試使用模型: {model_name}...")
-                        model = genai.GenerativeModel(model_name, tools='google_search_retrieval')
+                        model = genai.GenerativeModel(model_name)
+                        #model = genai.GenerativeModel(model_name, tools='google_search_retrieval')
                         for attempt in range(3):
                             try:
                                 api_call_count += 1

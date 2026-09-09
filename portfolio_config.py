@@ -8,7 +8,10 @@ PORTFOLIO = [
     # 🎯 核心股設定：只開啟 1 檔進行 AI 深度推演，避免 API 超時
     {"code": "2881", "name": "富邦金", "market": "TWSE", "shares": 100000, "cost_per_share": 50.0, "is_core": True, "valuation_method": "rim", "payout_ratio": 0.5, "target_yields": {"cheap": 5.0, "fair": 4.0, "target": 3.0}},
     {"code": "2597", "name": "潤弘", "market": "TWSE", "shares": 3200, "cost_per_share": 110.0, "valuation_method": "pe"},
-    
+    # 🤖 AI 伺服器與散熱族群 (新增並開啟 is_core 供 AI 決策矩陣分析)
+    {"code": "6669", "name": "緯穎", "market": "TWSE", "shares": 1000, "cost_per_share": 1800.0, "is_core": True, "valuation_method": "pe"},
+    {"code": "3017", "name": "奇鋐", "market": "TWSE", "shares": 1000, "cost_per_share": 600.0, "is_core": True, "valuation_method": "pe"},
+    {"code": "3324", "name": "雙鴻", "market": "TWSE", "shares": 1000, "cost_per_share": 600.0, "is_core": True, "valuation_method": "pe"},
     # ⚠️ 【修正】南亞科、華邦電、創見改回機械式年化預估 (yield)
     {"code": "2408", "name": "南亞科", "market": "TWSE", "shares": 100000, "cost_per_share": 0.0, "is_core": False ,"valuation_method": "yield", "payout_ratio": 0.70, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
     {"code": "2344", "name": "華邦電", "market": "TWSE", "shares": 100000, "cost_per_share": 0.0,"is_core": False , "valuation_method": "yield", "payout_ratio": 0.57, "target_yields": {"cheap": 7.0, "fair": 6.0, "target": 5.0}},
