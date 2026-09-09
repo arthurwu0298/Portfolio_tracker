@@ -431,8 +431,8 @@ class TaiwanMarketTracker:
         official_text_for_ai = ""
         core_tickers = {item["code"]: item["name"] for item in PORTFOLIO}
         try:
-            res_twse = self.session.get("[https://openapi.twse.com.tw/v1/opendata/t187ap04_L](https://openapi.twse.com.tw/v1/opendata/t187ap04_L)", timeout=10)
-            res_tpex = self.session.get("[https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O](https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O)", timeout=10)
+            res_twse = self.session.get("https://openapi.twse.com.tw/v1/opendata/t187ap04_L", timeout=10)
+            res_tpex = self.session.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O", timeout=10)
             mops_data = []
             if res_twse.status_code == 200: mops_data.extend(res_twse.json())
             if res_tpex.status_code == 200: mops_data.extend(res_tpex.json())
@@ -512,7 +512,8 @@ class TaiwanMarketTracker:
                     </tr>
                     <!-- 嚴格讀取【今日基礎全景數據】填入 TR 標籤。潛在上漲空間請自行以 (公允價值-市價)/市價 計算百分比。 -->
                   </table>
-
+                【今日基礎全景數據】
+                 {df_basic.to_string(index=False)}
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第二部分：估價模型與計算方法說明】</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
                     <li><b>科技成長股 (Forward P/E)：</b>使用預估當年度 EPS 配合歷史 PE 中樞判定。</li>
@@ -576,14 +577,19 @@ class TaiwanMarketTracker:
 
                 if not response: raise Exception(f"所有可用模型皆無法產生內容。")
                 
-                # 🚀 修正 3: 更強壯的 Markdown 標籤清除法
+                # 🚀 修正 3: 終極 HTML 萃取法，徹底濾除 AI 寒暄與 Markdown 標籤
+                import re
                 final_html = response.text.strip()
-                if final_html.startswith("```"):
-                    lines = final_html.split("\n")
-                    if lines[0].startswith("```"): lines = lines[1:]
-                    if lines[-1].startswith("```"): lines = lines[:-1]
-                    final_html = "\n".join(lines).strip()
-                    if final_html.startswith("html"): final_html = final_html[4:].strip()
+                
+                # 尋找第一個 <div 開始，到最後一個 </div> 結束的全部內容
+                match = re.search(r"(<div.*?</div>)", final_html, re.DOTALL | re.IGNORECASE)
+                if match:
+                    final_html = match.group(1)
+                else:
+                    # 備用清除法
+                    final_html = re.sub(r"^```(?:html)?\n?", "", final_html, flags=re.IGNORECASE)
+                    final_html = re.sub(r"\n?```$", "", final_html)
+                    final_html = final_html.strip()
 
                 return final_html
             except Exception as e:
