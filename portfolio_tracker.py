@@ -488,6 +488,7 @@ class TaiwanMarketTracker:
                 2. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！
                 3. 依賴提供的新聞：請運用下方提供的【原始官方公告與新聞】進行產業動態剖析。
                 4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】（不可使用 **粗體** 或 | 表格 |），必須完全使用標準的 HTML 標籤渲染。
+                5. 決策樹強制標示機率：在繪製 ASCII 決策樹時，【必須】在每個情境分支中，明確標註你預估的「發生機率」(如：機率 60%)。
 
                 二、 查核與分析標的清單：
                 1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
@@ -512,8 +513,7 @@ class TaiwanMarketTracker:
                     </tr>
                     <!-- 嚴格讀取【今日基礎全景數據】填入 TR 標籤。潛在上漲空間請自行以 (公允價值-市價)/市價 計算百分比。 -->
                   </table>
-                【今日基礎全景數據】
-                 {df_basic.to_string(index=False)}
+
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第二部分：估價模型與計算方法說明】</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
                     <li><b>科技成長股 (Forward P/E)：</b>使用預估當年度 EPS 配合歷史 PE 中樞判定。</li>
@@ -535,9 +535,9 @@ class TaiwanMarketTracker:
                        <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數與散戶狀態 --><br>
                        <b>技術面：</b> <!-- 簡述技術狀態 -->
                     </p>
-                    <h6 style='margin-bottom: 5px;'>走勢決策樹與操作腳本</h6>
+                    <h6 style='margin-bottom: 5px;'>走勢決策樹與操作腳本 (需標註各情境發生機率 %)</h6>
                     <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
-                    <!-- 依據紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境) -->
+                    <!-- 依據紀律繪製 ASCII 決策樹 (必須包含籌碼共振/左側下殺/量縮洗盤 等實戰情境，並加上機率) -->
                     </pre>
                   </div>
                 </div>

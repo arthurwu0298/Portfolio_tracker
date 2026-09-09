@@ -310,19 +310,17 @@ class FinMindValuationEngine:
         
         if fs_df.empty or bs_df.empty: return 0.0 
         
-        ni_keys = ['IncomeAfterTaxes', 'NetIncome', 'ProfitLoss', 'ProfitLossAttributableToOwnersOfParent', '本期淨利（淨損）', '歸屬於母公司業主之本期淨利（淨損）', '本期淨利']
-        eq_keys = ['Equity', 'TotalEquity', 'EquityAttributableToOwnersOfParent', 'StockholdersEquity', '權益總計', '權益總額', '歸屬於母公司業主之權益']
-        
-        # 淨利用 fs_df (損益表) 找，權益用 bs_df (資產負債表) 找
-        ni_data = fs_df[fs_df["type"].isin(ni_keys)].copy()
-        eq_data = bs_df[bs_df["type"].isin(eq_keys)].copy()
+        # 🚀 升級：使用模糊比對 (str.contains)，一網打盡所有金融股特殊的會計科目名稱
+        ni_data = fs_df[fs_df["type"].str.contains('NetIncome|ProfitLoss|淨利|淨損', case=False, na=False)].copy()
+        eq_data = bs_df[bs_df["type"].str.contains('Equity|權益', case=False, na=False)].copy()
         
         if ni_data.empty or eq_data.empty: return 0.0 
         
+        # 確保每個日期只取一個最具代表性的值 (去除重複科目的干擾)
         ni_data['date'] = pd.to_datetime(ni_data['date'])
         eq_data['date'] = pd.to_datetime(eq_data['date'])
-        ni_data = ni_data.sort_values('date')
-        eq_data = eq_data.sort_values('date')
+        ni_data = ni_data.sort_values(['date', 'value']).drop_duplicates(subset=['date'], keep='last')
+        eq_data = eq_data.sort_values(['date', 'value']).drop_duplicates(subset=['date'], keep='last')
         
         last_12_ni = ni_data.tail(12)
         last_12_eq = eq_data.tail(12)
