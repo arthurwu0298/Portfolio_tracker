@@ -343,11 +343,9 @@ class FinMindValuationEngine:
         return max(0.01, min(avg_roe, 0.25))
 
     def calc_residual_income_valuation(self, stock_id, current_price, current_pb):
-        """利用超額報酬模型推算合理淨值比 (Target P/B)"""
         if current_price <= 0:
             return 0, 0, 0, None
             
-        # PB 備援：若 YF 抓不到即時 PB，抓 FinMind 最新一筆歷史
         if current_pb <= 0:
             df_per = self._fetch_data("TaiwanStockPER", stock_id, years_back=1)
             if not df_per.empty and "PBR" in df_per.columns:
@@ -355,20 +353,22 @@ class FinMindValuationEngine:
                 if not valid_pb.empty:
                     current_pb = valid_pb.iloc[-1]
             
-            # 🛑 嚴格防呆：如果連歷史 PB 都沒有，代表無法計算，直接放棄，絕不硬塞 1.0
             if current_pb <= 0:
                 return 0, 0, 0, None
             
         bvps = current_price / current_pb
-        roe = self._get_3yr_avg_roe(stock_id)
         
-        # 🛑 嚴格防呆：若 ROE <= 0，代表企業正在虧損，RIM 模型失效，無法給出估值
-        if roe <= 0:
+        # 🚀 終極修復：放棄容易錯亂的絕對金額，改用 EPS 與 BVPS 反推最純粹的 ROE
+        fwd_eps, _ = self.estimate_forward_eps(stock_id)
+        if fwd_eps <= 0 or bvps <= 0:
             return 0, 0, 0, None
             
-        g = 0.02 
+        # 核心數學公式：ROE = EPS / BVPS
+        roe = fwd_eps / bvps
+        # 防呆保護：金融股 ROE 通常在 5%~15% 之間，設定合理上下限
+        roe = max(0.04, min(roe, 0.25))
         
-        # 股權成本 (Cost of Equity)
+        g = 0.02 
         ke_cheap = 0.085
         ke_fair = 0.070
         ke_exp = 0.055
@@ -376,7 +376,8 @@ class FinMindValuationEngine:
         def get_target_pb(ke):
             if ke <= g: return 1.0 
             target_pb = 1 + (roe - ke) / (ke - g)
-            return max(0.4, target_pb)
+            # 放寬底線至 0.6，避免過度低估
+            return max(0.6, target_pb)
             
         cheap_price = round(bvps * get_target_pb(ke_cheap), 1)
         fair_price = round(bvps * get_target_pb(ke_fair), 1)

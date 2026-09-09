@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+# 🚀 新增這兩個 Python 內建模組，用來解析 Google 新聞
+import urllib.parse
+import xml.etree.ElementTree as ET
 
 from portfolio_config import (
     PORTFOLIO, CASH_RESERVE, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, FINMIND_TOKEN
@@ -401,30 +404,38 @@ class TaiwanMarketTracker:
         conn.close()
 
     def get_news_and_analysis(self, df_basic, core_data_dict):
-        print("📰 [階段三] 抓取官方公告與媒體新聞，啟動 AI 雙層分析...")
+        print("📰 [階段三] 啟動自製 Google 新聞引擎與官方公告抓取，準備 AI 雙層分析...")
         
-        # 🚀 修正 1: 取得核心名單，並保留 market 屬性以分辨上市 (.TW) 或上櫃 (.TWO)
         core_portfolio = [item for item in PORTFOLIO if item.get("is_core", False)]
-        
         news_text_for_ai = ""
+        
+        # 🚀 完美的取代方案：Python 自製 Google News 爬蟲
         for item in core_portfolio:
             code = item["code"]
             name = item["name"]
-            market = item["market"]
             try:
-                # 判斷上市或上櫃後綴
-                suffix = ".TW" if market == "TWSE" else ".TWO"
-                tkr = yf.Ticker(f"{code}{suffix}")
-                news = tkr.news
-                if news:
+                # 組裝精準搜尋關鍵字，例如："緯穎 6669 營收 OR 法說會 OR 產能"
+                keyword = f"{name} {code} 營收 OR 法說會 OR 產能 OR 財報"
+                query = urllib.parse.quote(keyword)
+                
+                # 呼叫免 API Key 的 Google 新聞 RSS 介面 (鎖定繁體中文與台灣地區)
+                url = f"https://news.google.com/rss/search?q={query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+                res = self.session.get(url, timeout=10)
+                
+                if res.status_code == 200:
+                    root = ET.fromstring(res.text)
                     count = 0
-                    for n in news:
-                        title = n['title']
-                        news_text_for_ai += f"[{name} {code}] {title}\n"
+                    # 每檔股票精準抓取最新 2 則新聞
+                    for news_item in root.findall('.//item'):
+                        title = news_item.find('title').text
+                        pub_date = news_item.find('pubDate').text
+                        news_text_for_ai += f"[{name} {code}] {title} (發布時間: {pub_date})\n"
                         count += 1
                         if count >= 2: break
             except Exception as e:
+                print(f"  -> {name} 新聞抓取失敗: {e}")
                 pass
+            time.sleep(0.5) # 禮貌性延遲，避免被 Google 阻擋
                 
         if not news_text_for_ai: news_text_for_ai = "今日暫無重大媒體新聞。"
 
