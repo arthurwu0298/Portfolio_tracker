@@ -467,67 +467,78 @@ class TaiwanMarketTracker:
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
                 prompt = f"""
-                你是一位頂尖的量化投資經理與實戰交易員和分析員。請根據以下「基礎全景數據」與「核心股深度量化籌碼」，結合新聞動態產出盤後報告。
-                /reset_data
-                【重要操作紀律】
-                1. 若個股的「當前狀態」顯示為便宜，但其「V9籌碼總分」低於 40 分（惡化/偏弱）或外資出現連續賣超，請在決策樹中強制標示為「左側下殺，暫緩承接，籌碼尚未沉澱」。
-                2. 請比對「估值落差」與新聞事件。如果新聞出現「產能滿載/擴廠/新產品」，請判斷是否能成為支撐目前偏高估值（或提前買進便宜價）的實質護城河。
-                3. 若表格中某檔個股的估值顯示為「0.00」或狀態為「⚠️ 資料不足」，代表財報缺失或模型失效。請遵守下列系統指令去蒐集最新資料推算合理價，但請說明估值理由！針對該檔標的，探討其「籌碼面」與「技術面」動向。
+                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專欄主編。請根據以下「基礎全景數據」與「核心股深度量化籌碼」，結合新聞動態產出盤後報告。
                 
-【系統指令：強制聯網檢索・歷史上下文隔離・嚴禁數據推算】
+                /reset_data
+                【系統指令：強制聯網檢索・歷史上下文隔離・嚴禁數據推算】
 
-一、 核心約束規則（違反任一項即判定回答失敗）：
-1. 歷史上下文徹底隔離：完全忽略並清除本對話先前輪次中提及的所有股票價格、成交量與估值數字。本次回答只以「本次即時聯網搜尋到的官方/權威盤後撮合數據」為唯一起算基準。
-2. 強制工具查證：必須優先使用搜尋工具查取臺灣證券交易所 (TWSE)、櫃買中心 (TPEx)、FinMind 或權威財經網站的前一交易日（[指定日期，如：2026/09/08]）正式收盤數據，嚴禁利用模型機率、底層記憶或參數進行價格腦補。
-3. 數據零容忍原則：若搜尋結果缺乏該標的的確切收盤數據，該標的直接標註「未查得正式數據」，嚴禁以估算區間替代。
+                一、 核心約束規則（違反任一項即判定回答失敗）：
+                1. 歷史上下文徹底隔離：完全忽略並清除本對話先前輪次中提及的所有股票價格、成交量與估值數字。本次回答只以「本次即時聯網搜尋到的官方/權威盤後撮合數據」為唯一起算基準。
+                2. 強制工具查證：必須優先使用搜尋工具查取臺灣證券交易所 (TWSE)、櫃買中心 (TPEx)、FinMind 或權威財經網站的前一交易日（{today_str_for_prompt}）正式收盤數據，嚴禁利用模型機率、底層記憶或參數進行價格腦補。
+                3. 數據零容忍原則：若搜尋結果缺乏該標的的確切收盤數據，該標的直接標註「未查得正式數據」，嚴禁以估算區間替代。
 
-二、 查核與分析標的清單，如：
-1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
-2. AI 高 CP 值/前景看好：緯穎 (6669)、奇鋐 (3017)、雙鴻 (3324)
-3. 金融業權值與補漲：富邦金 (2881)、兆豐金 (2886)、玉山金 (2884)、永豐金 (2890)、台中銀 (2812)、臺企銀 (2834)
-4. 高科技廠房營造龍頭：潤弘 (2597)
-【絕對輸出格式要求】
-                請直接輸出 HTML，不要用 ```html 包裝：
-三、 請依序輸出以下四個部分：
+                二、 查核與分析標的清單，如：
+                1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
+                2. AI 高 CP 值/前景看好：緯穎 (6669)、奇鋐 (3017)、雙鴻 (3324)
+                3. 金融業權值與補漲：富邦金 (2881)、兆豐金 (2886)、玉山金 (2884)、永豐金 (2890)、台中銀 (2812)、臺企銀 (2834)
+                4. 高科技廠房營造龍頭：潤弘 (2597)
 
-【第一部分：前一交易日正式盤後撮合數據查核表】
-請嚴格以 Markdown 表格呈現查核結果，欄位包含：
-| 股票代號與名稱 | 交易日期 | 正式收盤價 (元) | 漲跌點數與幅度 (%) | 當日總成交量 (張) | 查證來源網站 |
-
-【第二部分：量化估價與潛在上漲空間矩陣】
-以第一部分驗證的真實收盤價為基準，列出：
-| 股票代號與名稱 | 最新市價 | 便宜價 | 公允價值 | 合理價區間 | 昂貴價 | 法人共識目標價 | 潛在上漲空間 (距公允值 %) | 距目標價空間 (%) |
-
-【第三部分：估價模型與計算方法說明】
-詳細說明科技成長股（Forward P/E）、景氣循環記憶體（Cycle-Adjusted P/E & P/B）、金融/營造傳產（P/B & DDM 殖利率法）的具體估算參數與邏輯。
-
-【第四部分：最新即時消息面剖析與個別操作建議】
-1. 記憶體、AI、金融族群及潤弘的最新即時產業消息與催化劑。
-2. 各檔股票的關鍵支撐防守價位與實戰買賣策略。
+                三、 請依序輸出以下四個部分（絕對輸出格式要求：請直接輸出 HTML，嚴禁使用 Markdown 包裝或 Markdown 表格）：
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
-                  <p style='font-size: 14px; margin-bottom: 20px;'><b>截至 {today_str_for_prompt} 最新盤後，投資組合綜合評估：</b><br>
-                  <!-- 結合大盤與產業輪動和產業動態，撰寫約 150 字摘要 --></p>
-                            
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>二、 最新即時焦點消息與產業重點分析</h4>
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px;'>【第一部分：前一交易日正式盤後撮合數據查核表】</h4>
+                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
+                    <tr style='background-color: #e9ecef;'>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>股票代號與名稱</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>交易日期</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>正式收盤價 (元)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>漲跌點數與幅度 (%)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>當日總成交量 (張)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>查證來源網站</th>
+                    </tr>
+                    <!-- 在此填入查核結果的 HTML <tr> -->
+                  </table>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第二部分：量化估價與潛在上漲空間矩陣】</h4>
+                  <p style='font-size: 12px; margin-bottom: 10px;'>以第一部分驗證的真實收盤價為基準，列出：</p>
+                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
+                    <tr style='background-color: #e9ecef;'>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>股票代號與名稱</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>最新市價</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>便宜價</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>公允價值</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>合理價區間</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>昂貴價</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>法人共識目標價</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>潛在上漲空間 (距公允值 %)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>距目標價空間 (%)</th>
+                    </tr>
+                    <!-- 在此填入估價矩陣的 HTML <tr> -->
+                  </table>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第三部分：估價模型與計算方法說明】</h4>
+                  <p style='font-size: 13px; line-height: 1.8;'>
+                    詳細說明科技成長股（Forward P/E）、景氣循環記憶體（Cycle-Adjusted P/E & P/B）、金融/營造傳產（P/B & DDM 殖利率法）的具體估算參數與邏輯。
+                  </p>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第四部分：最新即時焦點消息與產業重點分析】</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
-                    <!-- 精煉 4 到 5 點實質產業/重訊動態，並短評對估值的影響 -->
+                    <li>請精煉 4 到 5 點實質產業/重訊動態（涵蓋記憶體、AI、金融族群及潤弘），並短評對估值的影響。</li>
+                    <li>請給出各檔股票的關鍵支撐防守價位與實戰買賣策略。</li>
                   </ul>
                   
-                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>三、 核心持股深度多空決策矩陣</h4>
+                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>核心持股深度多空決策矩陣</h4>
                   <!-- 針對每一檔核心股重複以下結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
                     <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
-                    
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
                        <b>基本面位階：</b> <!-- 寫出現在處於便宜/合理/昂貴區 --><br>
                        <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數、散戶狀態與外資動向 --><br>
                        <b>技術面：</b> <!-- 簡述 MA20 乖離與 RSI -->
                     </p>
-                    
                     <h6 style='margin-bottom: 5px;'>下個交易日走勢決策樹與操作腳本</h6>
                     <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
-                    <!-- 依據上方紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境及各情境機率) -->
+                    <!-- 依據上方紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境及各情境發生機率) -->
                     </pre>
                   </div>
                 </div>
@@ -547,7 +558,7 @@ class TaiwanMarketTracker:
                 for model_name in target_models:
                     try:
                         print(f"嘗試使用模型: {model_name}...")
-                        model = genai.GenerativeModel(model_name)
+                        model = genai.GenerativeModel(model_name, tools='google_search_retrieval')
                         for attempt in range(3):
                             try:
                                 api_call_count += 1

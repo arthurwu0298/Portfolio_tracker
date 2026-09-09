@@ -267,9 +267,11 @@ class FinMindValuationEngine:
 
         g_L = 0.02  
         profile = self._get_profile(stock_id)
+        
         # 🚀 升級：景氣循環股谷底翻揚動能極強，短期成長率上限放寬至 80%
         cap = 0.80 if profile['is_cyclical'] else 0.35
         g_S = max(-0.25, min(cap, g_S)) 
+        
         H = 2.5 
         k_cheap, k_fair, k_exp = 0.075, 0.060, 0.045
         
@@ -302,14 +304,16 @@ class FinMindValuationEngine:
     #      RIM 估值連帶全部歸零。
     # ==============================================================
     def _get_3yr_avg_roe(self, stock_id):
-        # 🚀 核心修復：正確呼叫 TaiwanStockBalanceSheet 抓取權益
+        # 🚀 核心修復：權益 (Equity) 必須從 TaiwanStockBalanceSheet 抓取
         fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=4)
         bs_df = self._fetch_data("TaiwanStockBalanceSheet", stock_id, years_back=4)
+        
         if fs_df.empty or bs_df.empty: return 0.0 
         
         ni_keys = ['IncomeAfterTaxes', 'NetIncome', 'ProfitLoss', 'ProfitLossAttributableToOwnersOfParent', '本期淨利（淨損）', '歸屬於母公司業主之本期淨利（淨損）', '本期淨利']
         eq_keys = ['Equity', 'TotalEquity', 'EquityAttributableToOwnersOfParent', 'StockholdersEquity', '權益總計', '權益總額', '歸屬於母公司業主之權益']
         
+        # 淨利用 fs_df (損益表) 找，權益用 bs_df (資產負債表) 找
         ni_data = fs_df[fs_df["type"].isin(ni_keys)].copy()
         eq_data = bs_df[bs_df["type"].isin(eq_keys)].copy()
         
@@ -337,6 +341,7 @@ class FinMindValuationEngine:
         weights = [0.5, 0.3, 0.2][:len(roes)]
         weight_sum = sum(weights)
         avg_roe = sum(r * w for r, w in zip(roes, weights)) / weight_sum
+        
         return max(0.01, min(avg_roe, 0.25))
 
     def calc_residual_income_valuation(self, stock_id, current_price, current_pb):
