@@ -24,11 +24,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 METHOD_MAP = {
     "yield": "預估殖利率",
-    "pe": "本益比法",
+    "pe": "歷史本益比法",
     "pb": "淨值比法",
     "etf_yield": "歷史殖利率",
     "trend": "趨勢乖離法",
     "rim": "超額報酬模型",
+    "peg": "本益成長比(PEG)",  # 🚀 新增這行
     "manual": "手動設定"
 }
 
@@ -143,6 +144,10 @@ class TaiwanMarketTracker:
             if v_method == "pe":
                 res = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
                 if res: cheap_price, fair_price, target_price, _ = res
+            elif v_method == "peg":
+                res = self.valuation_engine.calc_peg_valuation(c, price)
+                if res and len(res) == 4: cheap_price, fair_price, target_price, _ = res
+                method_ch = "本益成長比(PEG)"    
             elif v_method == "pb":
                 res = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
                 if res: cheap_price, fair_price, target_price, _ = res
@@ -492,7 +497,7 @@ class TaiwanMarketTracker:
                 你是一位頂尖的量化投資經理、實戰交易員與財經專欄主編。請根據下方 Python 引擎計算的「基礎全景數據」、「官方新聞」與「核心股深度量化籌碼」，產出專業盤後報告。
                 
                 /reset_data
-                【系統指令：嚴格數據依賴・歷史上下文隔離・嚴禁腦補推算】
+                【系統指令：嚴格數據依賴・歷史上下文隔離・嚴禁腦補推算・反偷懶強制機制】
 
                 一、 核心約束規則（違反任一項即判定回答失敗）：
                 1. 歷史上下文徹底隔離：完全忽略本對話先前輪次中提及的數字。
@@ -500,6 +505,7 @@ class TaiwanMarketTracker:
                 3. 依賴提供的新聞：請運用下方提供的【原始官方公告與新聞】進行產業動態剖析。
                 4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】（不可使用 **粗體** 或 | 表格 |），必須完全使用標準的 HTML 標籤渲染。
                 5. 決策樹強制標示機率：在繪製 ASCII 決策樹時，【必須】在每個情境分支中，明確標註你預估的「發生機率」(如：機率 60%)。
+                6. 🔴 反偷懶強制輸出：第四部分的決策矩陣，你【必須】為下方【核心股深度量化籌碼】區塊中出現的「每一檔」股票，獨立生成一個對應的 <div> 分析區塊。嚴禁只寫一檔就結束，嚴禁省略！
 
                 二、 查核與分析標的清單：
                 1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
@@ -532,13 +538,13 @@ class TaiwanMarketTracker:
                     <li><b>金融/傳產 (RIM 超額報酬模型)：</b>取近三年 ROE 加權移動平均，推導公允淨值比(Target P/B)。</li>
                   </ul>
 
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第三部分：最新即時焦點消息面剖析與操作建議】</h4>
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第三部分：最新即時焦點消息面剖析】</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
-                    <!-- 根據提供的【原始官方公告與新聞】，精煉記憶體、AI、金融族群及潤弘的最新動態，並短評對估值的影響。給出關鍵支撐防守價位。 -->
+                      <!-- 根據提供的【原始官方公告與新聞】，將各標的「最新市價」與「當前狀態」帶入情境，精煉產業動態，並客觀剖析這些新聞事件對目前股價位階的影響。🔴 注意：僅需分析，【不需要】提供任何買賣操作建議。 -->
                   </ul>
                   
                   <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
-                  <!-- 針對每一檔核心股重複以下結構 -->
+                  <!-- 🔴 系統強制指令：請為【核心股深度量化籌碼】中提供的「每一檔」股票，重複生成以下 <div> 結構，絕不可省略任何一檔！ -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
                     <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
@@ -546,7 +552,7 @@ class TaiwanMarketTracker:
                        <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數與散戶狀態 --><br>
                        <b>技術面：</b> <!-- 簡述技術狀態 -->
                     </p>
-                    <h6 style='margin-bottom: 5px;'>走勢決策樹與操作腳本 (需標註各情境發生機率 %)</h6>
+                    <h6 style='margin-bottom: 5px;'>走勢決策樹與情境推演 (需標註各情境發生機率 %)</h6>
                     <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
                     <!-- 依據紀律繪製 ASCII 決策樹 (必須包含籌碼共振/左側下殺/量縮洗盤 等實戰情境，並加上機率) -->
                     </pre>

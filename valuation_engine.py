@@ -384,3 +384,33 @@ class FinMindValuationEngine:
         exp_price = round(bvps * get_target_pb(ke_exp), 1)
         
         return cheap_price, fair_price, exp_price, {"roe": roe, "bvps": bvps}
+    
+    def calc_peg_valuation(self, stock_id, current_price):
+        """
+        🚀 專為 AI 與高成長股設計的本益成長比 (PEG) 模型
+        完全忽略歷史本益比包袱，依據「未來預估成長率」給予動態估值。
+        """
+        if current_price <= 0: 
+            return 0, 0, 0, None
+            
+        fwd_eps, g = self.estimate_forward_eps(stock_id)
+        
+        # 若缺乏預估 EPS，或成長率低於 5% (不符合成長股定義)，直接返回無效值
+        if fwd_eps <= 0 or g <= 0.05: 
+            return 0, 0, 0, None
+            
+        # 將小數成長率轉為百分比數字 (例如 30% -> 30)
+        G = g * 100
+        
+        # 🛡️ 防呆機制：限制成長率上下限 (15 ~ 50)，避免單一年度極端值造成目標價射上太空
+        G = max(15, min(50, G))
+        
+        # 針對台灣 AI 概念股的市場慣性，設定 PEG 乘數區間：
+        # 便宜價：PEG = 0.8
+        # 公允價：PEG = 1.2 (享受 AI 溢價)
+        # 昂貴價：PEG = 1.6
+        pe_cheap = G * 0.8
+        pe_fair = G * 1.2
+        pe_exp = G * 1.6
+        
+        return round(fwd_eps * pe_cheap, 1), round(fwd_eps * pe_fair, 1), round(fwd_eps * pe_exp, 1), None
