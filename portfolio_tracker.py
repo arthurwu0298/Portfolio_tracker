@@ -486,7 +486,8 @@ class TaiwanMarketTracker:
 2. AI 高 CP 值/前景看好：緯穎 (6669)、奇鋐 (3017)、雙鴻 (3324)
 3. 金融業權值與補漲：富邦金 (2881)、兆豐金 (2886)、玉山金 (2884)、永豐金 (2890)、台中銀 (2812)、臺企銀 (2834)
 4. 高科技廠房營造龍頭：潤弘 (2597)
-
+【絕對輸出格式要求】
+                請直接輸出 HTML，不要用 ```html 包裝：
 三、 請依序輸出以下四個部分：
 
 【第一部分：前一交易日正式盤後撮合數據查核表】
@@ -503,26 +504,11 @@ class TaiwanMarketTracker:
 【第四部分：最新即時消息面剖析與個別操作建議】
 1. 記憶體、AI、金融族群及潤弘的最新即時產業消息與催化劑。
 2. 各檔股票的關鍵支撐防守價位與實戰買賣策略。
-                【絕對輸出格式要求】
-                請直接輸出 HTML，不要用 ```html 包裝：
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
                   <p style='font-size: 14px; margin-bottom: 20px;'><b>截至 {today_str_for_prompt} 最新盤後，投資組合綜合評估：</b><br>
                   <!-- 結合大盤與產業輪動和產業動態，撰寫約 150 字摘要 --></p>
-
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>一、 全投組基礎估值掃描</h4>
-                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
-                    <tr style='background-color: #e9ecef;'>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>標的</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>現價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>便宜價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>合理價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>昂貴(目標)價</th>
-                      <th style='border: 1px solid #ccc; padding: 8px;'>當前狀態</th>
-                    </tr>
-                    <!-- 套用下方傳入的【今日基礎全景數據】，若數據為0，請重新計算價格！ -->
-                  </table>
-                  
+                            
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>二、 最新即時焦點消息與產業重點分析</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
                     <!-- 精煉 4 到 5 點實質產業/重訊動態，並短評對估值的影響 -->
@@ -541,13 +527,10 @@ class TaiwanMarketTracker:
                     
                     <h6 style='margin-bottom: 5px;'>下個交易日走勢決策樹與操作腳本</h6>
                     <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
-                    <!-- 依據上方紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境) -->
+                    <!-- 依據上方紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境及各情境機率) -->
                     </pre>
                   </div>
                 </div>
-                
-                【今日基礎全景數據】
-                {df_basic.to_string(index=False)}
                 
                 【原始官方公告與新聞】
                 {official_text_for_ai}
