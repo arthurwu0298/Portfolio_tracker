@@ -147,14 +147,20 @@ class TaiwanMarketTracker:
                 if res: cheap_price, fair_price, target_price, _ = res
             elif v_method == "peg":
                 # 🚀 升級為混合估值大腦 (Blended Valuation)
-                res = self.valuation_engine.calc_blended_valuation(c, price)
+                res = self.valuation_engine.calc_blended_valuation(c, price, current_pb)
                 if res and len(res) == 4: 
                     cheap_price, fair_price, target_price, extra = res
                     if extra:
                         implied_g_val = extra.get("implied_g", "N/A")
                         dcf_w = extra.get("dcf_weight", 0)
+                        fcfe_w = extra.get("fcfe_weight", 0)
                         peg_w = extra.get("peg_weight", 100)
-                        method_ch = f"混合估值(PEG {peg_w}%/DCF {dcf_w}%)"
+                        if dcf_w > 0:
+                            method_ch = f"混合估值(PEG {peg_w}%/DCF {dcf_w}%)"
+                        elif fcfe_w > 0:
+                            method_ch = f"混合估值(PEG {peg_w}%/每股FCFE {fcfe_w}%)"
+                        else:
+                            method_ch = "混合估值(純PEG，資料不足降級)"
             elif v_method == "pb":
                 res = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
                 if res: cheap_price, fair_price, target_price, _ = res
@@ -511,13 +517,13 @@ class TaiwanMarketTracker:
 
                 一、 核心約束規則（違反任一項即判定回答失敗）：
                 1. 歷史上下文徹底隔離：完全忽略本對話先前輪次中提及的數字。
-                2. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！
+                2. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！【第一部分】表格必須涵蓋【今日基礎全景數據】裡「每一列」標的，一檔都不能少——下方清單二只是重點類股分類，用於第三部分新聞剖析參考，不是表格的篩選範圍。
                 3. 依賴提供的新聞：請運用下方提供的【原始官方公告與新聞】進行產業動態剖析。
                 4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】（不可使用 **粗體** 或 | 表格 |），必須完全使用標準的 HTML 標籤渲染。
                 5. 決策樹強制標示機率：在繪製 ASCII 決策樹時，【必須】在每個情境分支中，明確標註你預估的「發生機率」(如：機率 60%)。
                 6. 🔴 絕對反偷懶機制：本次【核心股深度量化籌碼】中共有 {core_count} 檔核心股（{core_portfolio_str}）。你在第四部分【必須】產出 {core_count} 個獨立的 <div> 區塊，一檔都不能少！嚴禁只寫一檔就結束！
 
-                二、 查核與分析標的清單：
+                二、 重點類股分類（僅供第三部分新聞剖析參考，不用於篩選第一部分表格）：
                 1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
                 2. AI 高 CP 值/前景看好：緯穎 (6669)、奇鋐 (3017)、雙鴻 (3324)
                 3. 金融業權值與補漲：富邦金 (2881)、兆豐金 (2886)、玉山金 (2884)、永豐金 (2890)、台中銀 (2812)、臺企銀 (2834)
@@ -553,8 +559,8 @@ class TaiwanMarketTracker:
                       <!-- 根據提供的【原始官方公告與新聞】，將各標的「最新市價」與「當前狀態」帶入情境，精煉產業動態，並客觀剖析這些新聞事件對目前股價位階的影響。🔴 注意：僅需分析，【不需要】提供任何買賣操作建議。 -->
                   </ul>
                   
-                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
-                  <!-- 🔴 系統強制指令：你必須輸出 {core_count} 次以下區塊，涵蓋清單中的每一檔：{core_portfolio_str} -->
+                 <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
+                  <!-- 🔴 系統強制指令：本次共有 {core_count} 檔核心股 ({core_portfolio_str})。你必須嚴格重複生成 {core_count} 次以下區塊，缺一不可！若你中斷或省略，將導致系統任務失敗！ -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
                     <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
@@ -562,10 +568,13 @@ class TaiwanMarketTracker:
                        <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數與散戶狀態 --><br>
                        <b>技術面：</b> <!-- 簡述技術狀態 -->
                     </p>
-                    <h6 style='margin-bottom: 5px;'>走勢決策樹與情境推演 (需標註各情境發生機率 %)</h6>
-                    <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
-                    <!-- 依據紀律繪製 ASCII 決策樹 (必須包含籌碼共振/左側下殺/量縮洗盤 等實戰情境，並加上機率) -->
-                    </pre>
+                    <h6 style='margin-bottom: 5px;'>走勢推演與操作情境 (需標註機率)</h6>
+                    <ul style='font-size: 12px; line-height: 1.6; margin-top: 0;'>
+                      <li><b>情境 A (機率 X%)：</b> <!-- 撰寫多方或突破情境與對應策略 --></li>
+                      <li><b>情境 B (機率 Y%)：</b> <!-- 撰寫震盪或洗盤情境與對應策略 --></li>
+                      <li><b>情境 C (機率 Z%)：</b> <!-- 撰寫空方或破底情境與對應策略 --></li>
+                    </ul>
+                  </div>
                   </div>
                 </div>
                 

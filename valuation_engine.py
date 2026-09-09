@@ -427,7 +427,14 @@ class FinMindValuationEngine:
             net_debt = debt - cash
             invested_capital = equity + debt - cash
             
-            share_capital = shares_data.sort_values('date').iloc[-1]['value'] if not shares_data.empty else 1000
+            # 🛠️ 修正：抓不到股本科目就直接判定資料不足，絕不可用假股本(1000)硬算，
+            #    否則股權價值除以幾百股會爆出天文數字的「每股價值」，
+            #    且會讓 calc_blended_valuation 的 shares<=0 保護機制永遠不會被觸發。
+            if shares_data.empty:
+                return 0, 0, 0, 0, 0
+            share_capital = shares_data.sort_values('date').iloc[-1]['value']
+            if share_capital <= 0:
+                return 0, 0, 0, 0, 0
             diluted_shares = share_capital / 10 
             
             return nopat, invested_capital, net_debt, diluted_shares, tax_rate
@@ -529,67 +536,165 @@ class FinMindValuationEngine:
             
         return implied_g
 
-    def calc_blended_valuation(self, stock_id: str, current_price: float):
+    def _calc_fcfe_per_share(self, fwd_eps, g_high, bvps, ke_start=0.095, ke_stable=0.085,
+                              stable_growth=0.02, forecast_years=5):
         """
-        🚀 混合估值系統大腦：整合 PEG、FCFF 與 Reverse DCF
-        依據資料品質自動降級，並產出綜合價格與市場隱含成長率
+        🚀 每股 FCFE 二階段模型：完全不需要總股數、總負債等「總量」科目，
+        只用 Forward EPS 與 BVPS（皆已經是每股基礎），股本科目查無/單位混亂時的備援。
+        ROE = EPS / BVPS，再投資率 = 成長率 / ROE（永續成長模型的標準關係），
+        不會受股本科目缺席或單位不一致影響。
+        """
+        if fwd_eps <= 0 or bvps <= 0: return None
+
+        roe = fwd_eps / bvps
+        roe = max(0.02, min(0.35, roe))  # 防呆：避免 BVPS 抓到異常值讓 ROE 暴衝或分母趨近 0
+
+        g_high = max(-0.20, min(0.40, g_high))
+        if stable_growth >= ke_stable: return None
+        if stable_growth / roe >= 1.0: return None  # 穩定期再投資率不合理，模型失效
+
+        warnings = []
+        eps = fwd_eps
+        pv_fcfe, discount_factor = 0.0, 1.0
+
+        for year in range(1, forecast_years + 1):
+            progress = year / forecast_years
+            growth = g_high + (stable_growth - g_high) * progress
+            ke = ke_start + (ke_stable - ke_start) * progress
+
+            reinvestment_rate = growth / roe
+            if reinvestment_rate > 1.0:
+                reinvestment_rate = 1.0
+                warnings.append(f"第{year}年成長所需再投資率超過100%")
+            elif reinvestment_rate < -0.5:
+                reinvestment_rate = -0.5
+
+            eps *= (1 + growth)
+            fcfe = eps * (1 - reinvestment_rate)
+
+            discount_factor *= (1 + ke)
+            pv_fcfe += fcfe / discount_factor
+
+        stable_reinvestment = stable_growth / roe
+        eps_next = eps * (1 + stable_growth)
+        terminal_fcfe = eps_next * (1 - stable_reinvestment)
+        terminal_value = terminal_fcfe / (ke_stable - stable_growth)
+        pv_terminal = terminal_value / discount_factor
+
+        value_per_share = pv_fcfe + pv_terminal
+        if value_per_share <= 0: return None
+        terminal_ratio = pv_terminal / value_per_share
+
+        if terminal_ratio > 0.85:
+            warnings.append(f"終值占比{terminal_ratio:.1%}，估值對折現率與永續成長率高度敏感")
+
+        return value_per_share, terminal_ratio, roe, warnings
+
+    def calc_blended_valuation(self, stock_id: str, current_price: float, current_pb: float = 0.0):
+        """
+        🚀 混合估值系統大腦：整合 PEG、FCFF、每股 FCFE 與 Reverse DCF
+        依資料完整度自動三階降級：
+          Tier 1：總量 FCFF + Reverse DCF（需要總 NOPAT／投入資本／淨負債／流通股數，品質最高）
+          Tier 2：每股 FCFE（股本科目查無或單位混亂時的備援，只需 Forward EPS 與 BVPS，不受股數影響）
+          Tier 3：純 PEG（連 EPS/BVPS 都拿不到時的最後防線）
         """
         if current_price <= 0: return None
-        
-        # 1. 計算 PEG 基底
+
+        # 1. 計算 PEG 基底（三個 tier 共用的兜底與混合基準）
         peg_res = self.calc_peg_valuation(stock_id, current_price)
         if not peg_res: return None
         peg_cheap, peg_fair, peg_exp, _ = peg_res
-        
-        # 2. 獲取基本面數據
+
+        fwd_eps, fwd_g = self.estimate_forward_eps(stock_id)
+
+        # 2. Tier 1：總量 FCFF
         nopat, ic, net_debt, shares, tax_rate = self._get_nopat_and_ic(stock_id)
-        _, fwd_g = self.estimate_forward_eps(stock_id)
-        
-        if nopat <= 0 or ic <= 0 or shares <= 0:
-            # 財報品質太差，直接降級為 100% PEG
-            return peg_cheap, peg_fair, peg_exp, {"implied_g": None, "dcf_weight": 0, "peg_weight": 100}
-            
-        wacc_start = 0.105
-        wacc_stable = 0.09
-        stable_growth = 0.02
-        roic_start = max(0.05, min(0.50, nopat / ic))
-        roic_stable = max(wacc_stable + 0.02, stable_growth + 0.01)
-        high_growth = max(0.05, min(0.40, fwd_g))
-        
-        # 3. 執行 FCFF
-        dcf_res = self.calc_two_stage_fcff(
-            nopat, high_growth, stable_growth, roic_start, roic_stable, 
-            wacc_start, wacc_stable, net_debt, shares
-        )
-        
-        # 4. 執行 Reverse DCF
-        implied_g = self.calc_reverse_dcf(
-            current_price, nopat, stable_growth, roic_start, roic_stable, 
-            wacc_start, wacc_stable, net_debt, shares
-        )
-        
-        if not dcf_res:
-            return peg_cheap, peg_fair, peg_exp, {"implied_g": implied_g, "dcf_weight": 0, "peg_weight": 100}
-            
-        # 5. 品質權重整合
-        dcf_confidence = self.calc_dcf_confidence(dcf_res)
-        dcf_weight = 0.40 * dcf_confidence # 最高給予 40% 權重
-        peg_weight = 1.0 - dcf_weight
-        
-        dcf_fair = dcf_res.value_per_share
-        dcf_cheap = dcf_fair * 0.85
-        dcf_exp = dcf_fair * 1.15
-        
-        blended_cheap = round((peg_cheap * peg_weight) + (dcf_cheap * dcf_weight), 1)
-        blended_fair = round((peg_fair * peg_weight) + (dcf_fair * dcf_weight), 1)
-        blended_exp = round((peg_exp * peg_weight) + (dcf_exp * dcf_weight), 1)
-        
-        implied_g_pct = round(implied_g * 100, 2) if implied_g is not None else "N/A"
-        
-        extra_data = {
+        implied_g_pct = "N/A"
+
+        if nopat > 0 and ic > 0 and shares > 0:
+            wacc_start = 0.105
+            wacc_stable = 0.09
+            stable_growth = 0.02
+            roic_start = max(0.05, min(0.50, nopat / ic))
+            roic_stable = max(wacc_stable + 0.02, stable_growth + 0.01)
+            high_growth = max(0.05, min(0.40, fwd_g))
+
+            dcf_res = self.calc_two_stage_fcff(
+                nopat, high_growth, stable_growth, roic_start, roic_stable,
+                wacc_start, wacc_stable, net_debt, shares
+            )
+            implied_g = self.calc_reverse_dcf(
+                current_price, nopat, stable_growth, roic_start, roic_stable,
+                wacc_start, wacc_stable, net_debt, shares
+            )
+            implied_g_pct = round(implied_g * 100, 2) if implied_g is not None else "N/A"
+
+            if dcf_res:
+                dcf_confidence = self.calc_dcf_confidence(dcf_res)
+                dcf_weight = 0.40 * dcf_confidence  # 最高給予 40% 權重
+                peg_weight = 1.0 - dcf_weight
+
+                dcf_fair = dcf_res.value_per_share
+                dcf_cheap = dcf_fair * 0.85
+                dcf_exp = dcf_fair * 1.15
+
+                blended_cheap = round((peg_cheap * peg_weight) + (dcf_cheap * dcf_weight), 1)
+                blended_fair = round((peg_fair * peg_weight) + (dcf_fair * dcf_weight), 1)
+                blended_exp = round((peg_exp * peg_weight) + (dcf_exp * dcf_weight), 1)
+
+                return blended_cheap, blended_fair, blended_exp, {
+                    "implied_g": implied_g_pct,
+                    "dcf_weight": round(dcf_weight * 100, 1),
+                    "peg_weight": round(peg_weight * 100, 1),
+                    "fcfe_weight": 0,
+                    "model": "FCFF"
+                }
+            # dcf_res 為 None（成長/ROIC 假設不合理）→ 往下試 Tier 2
+
+        # 3. Tier 2：每股 FCFE（股本科目查無/單位不明時的備援，不依賴總股數）
+        bvps = 0.0
+        if current_pb > 0:
+            bvps = current_price / current_pb
+        else:
+            df_per = self._fetch_data("TaiwanStockPER", stock_id, years_back=1)
+            if not df_per.empty and "PBR" in df_per.columns:
+                valid_pb = df_per[df_per["PBR"] > 0]["PBR"]
+                if not valid_pb.empty:
+                    bvps = current_price / valid_pb.iloc[-1]
+
+        fcfe_res = self._calc_fcfe_per_share(fwd_eps, fwd_g, bvps)
+        if fcfe_res:
+            fcfe_fair, terminal_ratio, roe_used, warnings = fcfe_res
+
+            fcfe_confidence = 1.0
+            if terminal_ratio > 0.85: fcfe_confidence -= 0.40
+            elif terminal_ratio > 0.75: fcfe_confidence -= 0.20
+            if len(warnings) >= 2: fcfe_confidence -= 0.20
+            fcfe_confidence = max(0.0, min(1.0, fcfe_confidence))
+
+            fcfe_weight = 0.35 * fcfe_confidence  # 每股模型比總量模型保守，最高給 35%
+            peg_weight = 1.0 - fcfe_weight
+
+            fcfe_cheap = fcfe_fair * 0.85
+            fcfe_exp = fcfe_fair * 1.15
+
+            blended_cheap = round((peg_cheap * peg_weight) + (fcfe_cheap * fcfe_weight), 1)
+            blended_fair = round((peg_fair * peg_weight) + (fcfe_fair * fcfe_weight), 1)
+            blended_exp = round((peg_exp * peg_weight) + (fcfe_exp * fcfe_weight), 1)
+
+            return blended_cheap, blended_fair, blended_exp, {
+                "implied_g": implied_g_pct,
+                "dcf_weight": 0,
+                "peg_weight": round(peg_weight * 100, 1),
+                "fcfe_weight": round(fcfe_weight * 100, 1),
+                "model": "FCFE/share"
+            }
+
+        # 4. Tier 3：純 PEG（連 EPS/BVPS 都拿不到，或 FCFE 模型假設不合理）
+        return peg_cheap, peg_fair, peg_exp, {
             "implied_g": implied_g_pct,
-            "dcf_weight": round(dcf_weight * 100, 1),
-            "peg_weight": round(peg_weight * 100, 1)
+            "dcf_weight": 0,
+            "peg_weight": 100,
+            "fcfe_weight": 0,
+            "model": "PEG"
         }
-        
-        return blended_cheap, blended_fair, blended_exp, extra_data
