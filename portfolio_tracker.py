@@ -140,14 +140,21 @@ class TaiwanMarketTracker:
             extra_note = item.get("note", "")
 
             cheap_price, fair_price, target_price = 0.0, 0.0, 0.0
+            implied_g_val = "N/A" # 🚀 新增變數，用來接 Reverse DCF 的結果
             
             if v_method == "pe":
                 res = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
                 if res: cheap_price, fair_price, target_price, _ = res
             elif v_method == "peg":
-                res = self.valuation_engine.calc_peg_valuation(c, price)
-                if res and len(res) == 4: cheap_price, fair_price, target_price, _ = res
-                method_ch = "本益成長比(PEG)"    
+                # 🚀 升級為混合估值大腦 (Blended Valuation)
+                res = self.valuation_engine.calc_blended_valuation(c, price)
+                if res and len(res) == 4: 
+                    cheap_price, fair_price, target_price, extra = res
+                    if extra:
+                        implied_g_val = extra.get("implied_g", "N/A")
+                        dcf_w = extra.get("dcf_weight", 0)
+                        peg_w = extra.get("peg_weight", 100)
+                        method_ch = f"混合估值(PEG {peg_w}%/DCF {dcf_w}%)"
             elif v_method == "pb":
                 res = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
                 if res: cheap_price, fair_price, target_price, _ = res
@@ -203,10 +210,10 @@ class TaiwanMarketTracker:
 
             records.append({
                 "代碼": c, "名稱": item["name"], "現價": price, 
-                "本益比(PE)": current_pe, "淨值比(PB)": current_pb, "殖利率(%)": dyield,
+                "便宜價(保守)": cheap_price, "公允價(基準)": fair_price, "昂貴價(樂觀)": target_price,
+                "當前狀態": current_status, 
                 "指定估價法": method_ch, 
-                "便宜價": cheap_price, "合理價": fair_price, "昂貴(目標)價": target_price,
-                "當前狀態": current_status, "自訂備註與限制": extra_note
+                "市場隱含成長率": f"{implied_g_val}%" if implied_g_val != "N/A" else "N/A" # 🚀 輸出給 AI 看的照妖鏡
             })
 
         self.save_to_db(total_cost, total_mkt, total_mkt + CASH_RESERVE, CASH_RESERVE, total_mkt - total_cost, round(((total_mkt - total_cost) / total_cost) * 100, 2) if total_cost > 0 else 0)
@@ -491,7 +498,10 @@ class TaiwanMarketTracker:
                 ]
                 
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
-                
+                # 🚀 抓取所有 is_core=True 的股票名稱，用來警告 AI 不准偷懶
+                core_portfolio_names = [f"{item['name']}({item['code']})" for item in PORTFOLIO if item.get("is_core", False)]
+                core_portfolio_str = "、".join(core_portfolio_names)
+                core_count = len(core_portfolio_names)
                 # 🚀 修正 2: 移除強制聯網要求，改為「嚴格依賴 Python 提供的數據與新聞」
                 prompt = f"""
                 你是一位頂尖的量化投資經理、實戰交易員與財經專欄主編。請根據下方 Python 引擎計算的「基礎全景數據」、「官方新聞」與「核心股深度量化籌碼」，產出專業盤後報告。
@@ -505,7 +515,7 @@ class TaiwanMarketTracker:
                 3. 依賴提供的新聞：請運用下方提供的【原始官方公告與新聞】進行產業動態剖析。
                 4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】（不可使用 **粗體** 或 | 表格 |），必須完全使用標準的 HTML 標籤渲染。
                 5. 決策樹強制標示機率：在繪製 ASCII 決策樹時，【必須】在每個情境分支中，明確標註你預估的「發生機率」(如：機率 60%)。
-                6. 🔴 反偷懶強制輸出：第四部分的決策矩陣，你【必須】為下方【核心股深度量化籌碼】區塊中出現的「每一檔」股票，獨立生成一個對應的 <div> 分析區塊。嚴禁只寫一檔就結束，嚴禁省略！
+                6. 🔴 絕對反偷懶機制：本次【核心股深度量化籌碼】中共有 {core_count} 檔核心股（{core_portfolio_str}）。你在第四部分【必須】產出 {core_count} 個獨立的 <div> 區塊，一檔都不能少！嚴禁只寫一檔就結束！
 
                 二、 查核與分析標的清單：
                 1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
@@ -517,25 +527,25 @@ class TaiwanMarketTracker:
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px;'>【第一部分：量化估價與潛在上漲空間矩陣】</h4>
-                  <p style='font-size: 12px; margin-bottom: 10px;'>以 Python 引擎驗證的真實收盤價為基準，列出：</p>
                   <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
                     <tr style='background-color: #e9ecef;'>
                       <th style='padding: 8px; border: 1px solid #ccc;'>股票代號與名稱</th>
                       <th style='padding: 8px; border: 1px solid #ccc;'>最新市價</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>便宜價</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>公允價值</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>昂貴價</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>便宜價(保守)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>公允價值(基準)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>昂貴價(樂觀)</th>
                       <th style='padding: 8px; border: 1px solid #ccc;'>當前狀態</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>潛在上漲空間 (距公允值)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>市場隱含成長率</th>
                     </tr>
-                    <!-- 嚴格讀取【今日基礎全景數據】填入 TR 標籤。潛在上漲空間請自行以 (公允價值-市價)/市價 計算百分比。 -->
+                    <!-- 嚴格讀取【今日基礎全景數據】填入，市場隱含成長率來自 Reverse DCF -->
                   </table>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第二部分：估價模型與計算方法說明】</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
-                    <li><b>科技成長股 (Forward P/E)：</b>使用預估當年度 EPS 配合歷史 PE 中樞判定。</li>
-                    <li><b>景氣循環記憶體 (H-Model)：</b>短期爆發成長率上限放寬至 80%，平滑過渡至 2% 永續成長。</li>
-                    <li><b>金融/傳產 (RIM 超額報酬模型)：</b>取近三年 ROE 加權移動平均，推導公允淨值比(Target P/B)。</li>
+                    <li><b>科技與 AI 成長股（動態 PEG、基本面隱含 DCF 與反向估值檢核）：</b>針對處於高速成長及資本支出擴張期之標的，主模型採 Forward EPS 與可持續盈餘成長率計算動態 PEG，並建立保守、基準及樂觀三套獨立情境。同時以 NOPAT、ROIC、再投資率及 WACC 建構簡化二階段 FCFF 模型，檢查盈餘成長能否轉化為股東價值；另以 Reverse DCF 反推目前股價隱含的成長率，避免高成長率與高估值倍數產生雙重放大。</li>
+                    <li><b>景氣循環與記憶體類股（正常化盈餘、循環情境與淨值交叉估值）：</b>不直接外推單一年度高峰或谷底盈餘，改採完整景氣循環之正常化營收、毛利率及 EPS，分別建立供需保守、基準及樂觀情境，並以歷史 P/B、正常化 ROE 與資產重置價值進行交叉檢核。</li>
+                    <li><b>金融業（RIM 超額報酬與目標淨值比）：</b>以每股淨值為估值基礎，依正常化 ROE、股權資金成本、配息率及盈餘保留率估算未來超額報酬，並使 ROE 隨時間收斂至長期合理水準，推導公允 Target P/B。</li>
+                    <li><b>營造與一般傳產（正常化盈餘、訂單能見度與現金流估值）：</b>依在手訂單、工程認列進度、正常化毛利率及淨現金部位估算中期 EPS，並視自由現金流穩定度搭配 FCFF 或正常化 P/E 進行交叉驗證。</li>
                   </ul>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第三部分：最新即時焦點消息面剖析】</h4>
@@ -544,7 +554,7 @@ class TaiwanMarketTracker:
                   </ul>
                   
                   <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
-                  <!-- 🔴 系統強制指令：請為【核心股深度量化籌碼】中提供的「每一檔」股票，重複生成以下 <div> 結構，絕不可省略任何一檔！ -->
+                  <!-- 🔴 系統強制指令：你必須輸出 {core_count} 次以下區塊，涵蓋清單中的每一檔：{core_portfolio_str} -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
                     <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>

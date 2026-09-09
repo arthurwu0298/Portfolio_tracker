@@ -6,6 +6,20 @@ import pandas as pd
 import numpy as np
 import sqlite3
 from datetime import datetime, timedelta
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+
+# ==========================================
+# 🚀 定義 DCF 估值結果的資料結構
+# ==========================================
+@dataclass
+class DCFResult:
+    enterprise_value: float
+    equity_value: float
+    value_per_share: float
+    terminal_value_ratio: float
+    yearly_details: List[Dict]
+    warnings: List[str]
 
 class FinMindValuationEngine:
     def __init__(self, token="", db_file="portfolio_history.db", cache_max_age_days=7):
@@ -75,12 +89,8 @@ class FinMindValuationEngine:
         if current_price <= 0 or current_pe <= 0: return 0, 0, 0, None
         df = self._fetch_data("TaiwanStockPER", stock_id, years_back=5)
         if df.empty or "PER" not in df.columns: return 0, 0, 0, None
-        
-        # 🚀 升級：不再用每日浮動的 current_price / current_pe
-        # 改用具有 CAPE 均值保護與營運槓桿推算的 Forward EPS，消除循環股暴衝盲點
         fwd_eps, _ = self.estimate_forward_eps(stock_id)
         if fwd_eps <= 0: return 0, 0, 0, None
-        
         valid_pe = df[df["PER"] > 0]["PER"]
         if valid_pe.empty: return 0, 0, 0, None
         pe_20, pe_50, pe_80 = np.percentile(valid_pe, 20), np.percentile(valid_pe, 50), np.percentile(valid_pe, 80)
@@ -267,8 +277,6 @@ class FinMindValuationEngine:
 
         g_L = 0.02  
         profile = self._get_profile(stock_id)
-        
-        # 🚀 升級：景氣循環股谷底翻揚動能極強，短期成長率上限放寬至 80%
         cap = 0.80 if profile['is_cyclical'] else 0.35
         g_S = max(-0.25, min(cap, g_S)) 
         
@@ -284,39 +292,24 @@ class FinMindValuationEngine:
              
         return round(numerator / (k_cheap - g_L), 1), round(numerator / (k_fair - g_L), 1), round(numerator / (k_exp - g_L), 1), None
 
-    # ==============================================================
-    # 🚀 新增 1：葛拉漢公式 (Graham Number) 防呆下限
-    # ==============================================================
     def calc_graham_number(self, stock_id, current_price, current_pb):
-        # 🚀 升級：以經過平滑處理的 Forward EPS 取代每日跳動的 TTM EPS
         if current_price <= 0 or current_pb <= 0: return 0.0
         eps, _ = self.estimate_forward_eps(stock_id)
         bvps = current_price / current_pb
         if eps > 0 and bvps > 0: return round(math.sqrt(22.5 * eps * bvps), 1)
         return 0.0
 
-    # ==============================================================
-    # 🚀 嚴謹版：超額報酬模型 (Residual Income Model) - 絕不造假數據
-    # 🛠️ 修正：淨利與股東權益分屬不同報表，不能只查一個資料集
-    #    - 淨利 (IncomeAfterTaxes 等) 屬於「綜合損益表」TaiwanStockFinancialStatements
-    #    - 股東權益 (Equity 等) 屬於「資產負債表」TaiwanStockBalanceSheet，兩者是 FinMind 上
-    #      不同的 dataset；之前只查損益表，導致權益科目幾乎抓不到，ROE 永遠算出 0，
-    #      RIM 估值連帶全部歸零。
-    # ==============================================================
     def _get_3yr_avg_roe(self, stock_id):
-        # 🚀 核心修復：權益 (Equity) 必須從 TaiwanStockBalanceSheet 抓取
         fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=4)
         bs_df = self._fetch_data("TaiwanStockBalanceSheet", stock_id, years_back=4)
         
         if fs_df.empty or bs_df.empty: return 0.0 
         
-        # 🚀 升級：使用模糊比對 (str.contains)，一網打盡所有金融股特殊的會計科目名稱
         ni_data = fs_df[fs_df["type"].str.contains('NetIncome|ProfitLoss|淨利|淨損', case=False, na=False)].copy()
         eq_data = bs_df[bs_df["type"].str.contains('Equity|權益', case=False, na=False)].copy()
         
         if ni_data.empty or eq_data.empty: return 0.0 
         
-        # 確保每個日期只取一個最具代表性的值 (去除重複科目的干擾)
         ni_data['date'] = pd.to_datetime(ni_data['date'])
         eq_data['date'] = pd.to_datetime(eq_data['date'])
         ni_data = ni_data.sort_values(['date', 'value']).drop_duplicates(subset=['date'], keep='last')
@@ -343,8 +336,7 @@ class FinMindValuationEngine:
         return max(0.01, min(avg_roe, 0.25))
 
     def calc_residual_income_valuation(self, stock_id, current_price, current_pb):
-        if current_price <= 0:
-            return 0, 0, 0, None
+        if current_price <= 0: return 0, 0, 0, None
             
         if current_pb <= 0:
             df_per = self._fetch_data("TaiwanStockPER", stock_id, years_back=1)
@@ -352,20 +344,13 @@ class FinMindValuationEngine:
                 valid_pb = df_per[df_per["PBR"] > 0]["PBR"]
                 if not valid_pb.empty:
                     current_pb = valid_pb.iloc[-1]
-            
-            if current_pb <= 0:
-                return 0, 0, 0, None
+            if current_pb <= 0: return 0, 0, 0, None
             
         bvps = current_price / current_pb
-        
-        # 🚀 終極修復：放棄容易錯亂的絕對金額，改用 EPS 與 BVPS 反推最純粹的 ROE
         fwd_eps, _ = self.estimate_forward_eps(stock_id)
-        if fwd_eps <= 0 or bvps <= 0:
-            return 0, 0, 0, None
+        if fwd_eps <= 0 or bvps <= 0: return 0, 0, 0, None
             
-        # 核心數學公式：ROE = EPS / BVPS
         roe = fwd_eps / bvps
-        # 防呆保護：金融股 ROE 通常在 5%~15% 之間，設定合理上下限
         roe = max(0.04, min(roe, 0.25))
         
         g = 0.02 
@@ -376,7 +361,6 @@ class FinMindValuationEngine:
         def get_target_pb(ke):
             if ke <= g: return 1.0 
             target_pb = 1 + (roe - ke) / (ke - g)
-            # 放寬底線至 0.6，避免過度低估
             return max(0.6, target_pb)
             
         cheap_price = round(bvps * get_target_pb(ke_cheap), 1)
@@ -386,31 +370,226 @@ class FinMindValuationEngine:
         return cheap_price, fair_price, exp_price, {"roe": roe, "bvps": bvps}
     
     def calc_peg_valuation(self, stock_id, current_price):
-        """
-        🚀 專為 AI 與高成長股設計的本益成長比 (PEG) 模型
-        完全忽略歷史本益比包袱，依據「未來預估成長率」給予動態估值。
-        """
-        if current_price <= 0: 
-            return 0, 0, 0, None
-            
+        if current_price <= 0: return 0, 0, 0, None
         fwd_eps, g = self.estimate_forward_eps(stock_id)
-        
-        # 若缺乏預估 EPS，或成長率低於 5% (不符合成長股定義)，直接返回無效值
-        if fwd_eps <= 0 or g <= 0.05: 
-            return 0, 0, 0, None
+        if fwd_eps <= 0 or g <= 0.05: return 0, 0, 0, None
             
-        # 將小數成長率轉為百分比數字 (例如 30% -> 30)
         G = g * 100
+        G = max(10, min(50, G)) 
         
-        # 🛡️ 防呆機制：限制成長率上下限 (15 ~ 50)，避免單一年度極端值造成目標價射上太空
-        G = max(15, min(50, G))
+        eps_cons = fwd_eps * 0.85
+        pe_cheap = max(10, G * 0.8) * 0.8
+        cheap_price = round(eps_cons * pe_cheap, 1)
         
-        # 針對台灣 AI 概念股的市場慣性，設定 PEG 乘數區間：
-        # 便宜價：PEG = 0.8
-        # 公允價：PEG = 1.2 (享受 AI 溢價)
-        # 昂貴價：PEG = 1.6
-        pe_cheap = G * 0.8
+        eps_fair = fwd_eps
         pe_fair = G * 1.2
-        pe_exp = G * 1.6
+        fair_price = round(eps_fair * pe_fair, 1)
         
-        return round(fwd_eps * pe_cheap, 1), round(fwd_eps * pe_fair, 1), round(fwd_eps * pe_exp, 1), None
+        eps_opt = fwd_eps * 1.15
+        pe_exp = min(60, G * 1.2) * 1.6
+        exp_price = round(eps_opt * pe_exp, 1)
+        
+        return cheap_price, fair_price, exp_price, None
+
+    # ==============================================================
+    # 🚀 FCFF 與 混合估值 (Blended Valuation) 系統實裝
+    # ==============================================================
+    def _get_nopat_and_ic(self, stock_id):
+        """獲取 NOPAT、有效稅率與投入資本，用於計算 ROIC"""
+        fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=3)
+        bs_df = self._fetch_data("TaiwanStockBalanceSheet", stock_id, years_back=3)
+        
+        if fs_df.empty or bs_df.empty: 
+            return 0, 0, 0, 0, 0
+
+        op_data = fs_df[fs_df["type"].str.contains('OperatingIncome|營業利益', case=False, na=False)]
+        pt_data = fs_df[fs_df["type"].str.contains('IncomeBeforeTax|稅前淨利', case=False, na=False)]
+        tax_data = fs_df[fs_df["type"].str.contains('IncomeTaxExpense|所得稅', case=False, na=False)]
+        
+        eq_data = bs_df[bs_df["type"].str.contains('Equity|權益', case=False, na=False)]
+        debt_data = bs_df[bs_df["type"].str.contains('Debt|借款|公司債', case=False, na=False)]
+        cash_data = bs_df[bs_df["type"].str.contains('CashAndCashEquivalents|現金及約當現金', case=False, na=False)]
+        shares_data = bs_df[bs_df["type"].str.contains('OrdinaryShares|普通股股本', case=False, na=False)]
+
+        try:
+            op_ttm = op_data.sort_values('date').tail(4)['value'].sum()
+            pt_ttm = pt_data.sort_values('date').tail(4)['value'].sum()
+            tax_ttm = tax_data.sort_values('date').tail(4)['value'].sum()
+            
+            raw_tax_rate = (tax_ttm / pt_ttm) if pt_ttm > 0 else 0.20
+            tax_rate = max(0.15, min(0.25, raw_tax_rate))
+            nopat = op_ttm * (1 - tax_rate)
+            
+            equity = eq_data.sort_values('date').iloc[-1]['value'] if not eq_data.empty else 0
+            debt = debt_data.sort_values('date').tail(4).groupby('type').last()['value'].sum() if not debt_data.empty else 0
+            cash = cash_data.sort_values('date').iloc[-1]['value'] if not cash_data.empty else 0
+            
+            net_debt = debt - cash
+            invested_capital = equity + debt - cash
+            
+            share_capital = shares_data.sort_values('date').iloc[-1]['value'] if not shares_data.empty else 1000
+            diluted_shares = share_capital / 10 
+            
+            return nopat, invested_capital, net_debt, diluted_shares, tax_rate
+        except:
+            return 0, 0, 0, 1, 0
+
+    def calc_two_stage_fcff(self, nopat_0: float, high_growth: float, stable_growth: float, 
+                            roic_start: float, roic_stable: float, wacc_start: float, 
+                            wacc_stable: float, net_debt: float, diluted_shares: float, 
+                            forecast_years: int = 5, max_terminal_ratio: float = 0.85) -> Optional[DCFResult]:
+        """基本面隱含 FCFF 二階段模型"""
+        warnings = []
+        
+        if nopat_0 <= 0 or diluted_shares <= 0: return None
+        if stable_growth >= wacc_stable: return None
+        if roic_start <= 0 or roic_stable <= 0: return None
+        if stable_growth / roic_stable >= 1.0:
+            warnings.append("穩定期再投資率達100%以上，終值假設不合理。")
+            return None
+            
+        pv_fcff, discount_factor = 0.0, 1.0
+        nopat = nopat_0
+        yearly_details = []
+        
+        for year in range(1, forecast_years + 1):
+            progress = year / forecast_years
+            growth = high_growth + (stable_growth - high_growth) * progress
+            roic = roic_start + (roic_stable - roic_start) * progress
+            wacc = wacc_start + (wacc_stable - wacc_start) * progress
+            
+            if roic <= 0: return None
+            
+            reinvestment_rate = growth / roic
+            if reinvestment_rate > 1.0:
+                warnings.append(f"第{year}年再投資率超過100%，代表成長需要額外融資。")
+                
+            nopat *= (1 + growth)
+            fcff = nopat * (1 - reinvestment_rate)
+            
+            discount_factor *= (1 + wacc)
+            pv = fcff / discount_factor
+            pv_fcff += pv
+            
+            yearly_details.append({
+                "year": year, "growth": growth, "roic": roic, "wacc": wacc,
+                "reinvestment_rate": reinvestment_rate, "nopat": nopat, "fcff": fcff, "pv_fcff": pv
+            })
+            
+        stable_reinvestment_rate = stable_growth / roic_stable
+        nopat_next = nopat * (1 + stable_growth)
+        terminal_fcff = nopat_next * (1 - stable_reinvestment_rate)
+        terminal_value = terminal_fcff / (wacc_stable - stable_growth)
+        pv_terminal_value = terminal_value / discount_factor
+        
+        enterprise_value = pv_fcff + pv_terminal_value
+        equity_value = enterprise_value - net_debt
+        value_per_share = equity_value / diluted_shares
+        
+        terminal_value_ratio = pv_terminal_value / enterprise_value if enterprise_value > 0 else 1.0
+        
+        if terminal_value_ratio > max_terminal_ratio:
+            warnings.append(f"終值占企業價值{terminal_value_ratio:.1%}，估值對WACC與永續成長率高度敏感。")
+        if equity_value <= 0:
+            warnings.append("扣除淨負債後股權價值不為正。")
+            
+        return DCFResult(enterprise_value, equity_value, value_per_share, terminal_value_ratio, yearly_details, warnings)
+
+    def calc_dcf_confidence(self, result: DCFResult) -> float:
+        """動態計算 DCF 模型的品質信心分數"""
+        score = 1.0
+        if result.terminal_value_ratio > 0.85: score -= 0.40
+        elif result.terminal_value_ratio > 0.75: score -= 0.20
+        
+        if len(result.warnings) >= 3: score -= 0.30
+        elif len(result.warnings) >= 1: score -= 0.10
+        
+        return max(0.0, min(score, 1.0))
+
+    def calc_reverse_dcf(self, target_price: float, nopat_0: float, stable_growth: float, 
+                         roic_start: float, roic_stable: float, wacc_start: float, 
+                         wacc_stable: float, net_debt: float, diluted_shares: float) -> Optional[float]:
+        """Reverse DCF：利用二分逼近法反推市場隱含的 NOPAT 成長率"""
+        low, high = -0.50, 2.00 # 搜尋區間：-50% 到 200% 成長率
+        implied_g = None
+        
+        for _ in range(40): # 40 次迭代精度極高
+            mid = (low + high) / 2
+            res = self.calc_two_stage_fcff(
+                nopat_0, mid, stable_growth, roic_start, roic_stable, 
+                wacc_start, wacc_stable, net_debt, diluted_shares, max_terminal_ratio=1.0
+            )
+            if not res: 
+                high = mid 
+                continue
+                
+            if res.value_per_share > target_price: high = mid
+            else: low = mid
+            implied_g = mid
+            
+        return implied_g
+
+    def calc_blended_valuation(self, stock_id: str, current_price: float):
+        """
+        🚀 混合估值系統大腦：整合 PEG、FCFF 與 Reverse DCF
+        依據資料品質自動降級，並產出綜合價格與市場隱含成長率
+        """
+        if current_price <= 0: return None
+        
+        # 1. 計算 PEG 基底
+        peg_res = self.calc_peg_valuation(stock_id, current_price)
+        if not peg_res: return None
+        peg_cheap, peg_fair, peg_exp, _ = peg_res
+        
+        # 2. 獲取基本面數據
+        nopat, ic, net_debt, shares, tax_rate = self._get_nopat_and_ic(stock_id)
+        _, fwd_g = self.estimate_forward_eps(stock_id)
+        
+        if nopat <= 0 or ic <= 0 or shares <= 0:
+            # 財報品質太差，直接降級為 100% PEG
+            return peg_cheap, peg_fair, peg_exp, {"implied_g": None, "dcf_weight": 0, "peg_weight": 100}
+            
+        wacc_start = 0.105
+        wacc_stable = 0.09
+        stable_growth = 0.02
+        roic_start = max(0.05, min(0.50, nopat / ic))
+        roic_stable = max(wacc_stable + 0.02, stable_growth + 0.01)
+        high_growth = max(0.05, min(0.40, fwd_g))
+        
+        # 3. 執行 FCFF
+        dcf_res = self.calc_two_stage_fcff(
+            nopat, high_growth, stable_growth, roic_start, roic_stable, 
+            wacc_start, wacc_stable, net_debt, shares
+        )
+        
+        # 4. 執行 Reverse DCF
+        implied_g = self.calc_reverse_dcf(
+            current_price, nopat, stable_growth, roic_start, roic_stable, 
+            wacc_start, wacc_stable, net_debt, shares
+        )
+        
+        if not dcf_res:
+            return peg_cheap, peg_fair, peg_exp, {"implied_g": implied_g, "dcf_weight": 0, "peg_weight": 100}
+            
+        # 5. 品質權重整合
+        dcf_confidence = self.calc_dcf_confidence(dcf_res)
+        dcf_weight = 0.40 * dcf_confidence # 最高給予 40% 權重
+        peg_weight = 1.0 - dcf_weight
+        
+        dcf_fair = dcf_res.value_per_share
+        dcf_cheap = dcf_fair * 0.85
+        dcf_exp = dcf_fair * 1.15
+        
+        blended_cheap = round((peg_cheap * peg_weight) + (dcf_cheap * dcf_weight), 1)
+        blended_fair = round((peg_fair * peg_weight) + (dcf_fair * dcf_weight), 1)
+        blended_exp = round((peg_exp * peg_weight) + (dcf_exp * dcf_weight), 1)
+        
+        implied_g_pct = round(implied_g * 100, 2) if implied_g is not None else "N/A"
+        
+        extra_data = {
+            "implied_g": implied_g_pct,
+            "dcf_weight": round(dcf_weight * 100, 1),
+            "peg_weight": round(peg_weight * 100, 1)
+        }
+        
+        return blended_cheap, blended_fair, blended_exp, extra_data
