@@ -402,12 +402,19 @@ class TaiwanMarketTracker:
 
     def get_news_and_analysis(self, df_basic, core_data_dict):
         print("📰 [階段三] 抓取官方公告與媒體新聞，啟動 AI 雙層分析...")
-        core_tickers = {item["code"]: item["name"] for item in PORTFOLIO}
+        
+        # 🚀 修正 1: 取得核心名單，並保留 market 屬性以分辨上市 (.TW) 或上櫃 (.TWO)
+        core_portfolio = [item for item in PORTFOLIO if item.get("is_core", False)]
         
         news_text_for_ai = ""
-        for code, name in core_tickers.items():
+        for item in core_portfolio:
+            code = item["code"]
+            name = item["name"]
+            market = item["market"]
             try:
-                tkr = yf.Ticker(f"{code}.TW")
+                # 判斷上市或上櫃後綴
+                suffix = ".TW" if market == "TWSE" else ".TWO"
+                tkr = yf.Ticker(f"{code}{suffix}")
                 news = tkr.news
                 if news:
                     count = 0
@@ -416,13 +423,16 @@ class TaiwanMarketTracker:
                         news_text_for_ai += f"[{name} {code}] {title}\n"
                         count += 1
                         if count >= 2: break
-            except: pass
+            except Exception as e:
+                pass
+                
         if not news_text_for_ai: news_text_for_ai = "今日暫無重大媒體新聞。"
 
         official_text_for_ai = ""
+        core_tickers = {item["code"]: item["name"] for item in PORTFOLIO}
         try:
-            res_twse = self.session.get("https://openapi.twse.com.tw/v1/opendata/t187ap04_L", timeout=10)
-            res_tpex = self.session.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O", timeout=10)
+            res_twse = self.session.get("[https://openapi.twse.com.tw/v1/opendata/t187ap04_L](https://openapi.twse.com.tw/v1/opendata/t187ap04_L)", timeout=10)
+            res_tpex = self.session.get("[https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O](https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O)", timeout=10)
             mops_data = []
             if res_twse.status_code == 200: mops_data.extend(res_twse.json())
             if res_tpex.status_code == 200: mops_data.extend(res_tpex.json())
@@ -466,82 +476,73 @@ class TaiwanMarketTracker:
                 
                 today_str_for_prompt = datetime.now().strftime("%Y 年 %m 月 %d 日")
                 
+                # 🚀 修正 2: 移除強制聯網要求，改為「嚴格依賴 Python 提供的數據與新聞」
                 prompt = f"""
-                你是一位頂尖的量化投資經理與實戰交易員和分析員及財經專欄主編。請根據以下「基礎全景數據」與「核心股深度量化籌碼」，結合新聞動態產出盤後報告。
+                你是一位頂尖的量化投資經理、實戰交易員與財經專欄主編。請根據下方 Python 引擎計算的「基礎全景數據」、「官方新聞」與「核心股深度量化籌碼」，產出專業盤後報告。
                 
                 /reset_data
-                【系統指令：強制聯網檢索・歷史上下文隔離・嚴禁數據推算】
+                【系統指令：嚴格數據依賴・歷史上下文隔離・嚴禁腦補推算】
 
                 一、 核心約束規則（違反任一項即判定回答失敗）：
-                1. 歷史上下文徹底隔離：完全忽略並清除本對話先前輪次中提及的所有股票價格、成交量與估值數字。本次回答只以「本次即時聯網搜尋到的官方/權威盤後撮合數據」為唯一起算基準。
-                2. 強制工具查證：必須優先使用搜尋工具查取臺灣證券交易所 (TWSE)、櫃買中心 (TPEx)、FinMind 或權威財經網站的前一交易日（{today_str_for_prompt}）正式收盤數據，嚴禁利用模型機率、底層記憶或參數進行價格腦補。
-                3. 數據零容忍原則：若搜尋結果缺乏該標的的確切收盤數據，該標的直接標註「未查得正式數據」，嚴禁以估算區間替代。
+                1. 歷史上下文徹底隔離：完全忽略本對話先前輪次中提及的數字。
+                2. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！
+                3. 依賴提供的新聞：請運用下方提供的【原始官方公告與新聞】進行產業動態剖析。
+                4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】（不可使用 **粗體** 或 | 表格 |），必須完全使用標準的 HTML 標籤渲染。
 
-                二、 查核與分析標的清單，如：
+                二、 查核與分析標的清單：
                 1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
                 2. AI 高 CP 值/前景看好：緯穎 (6669)、奇鋐 (3017)、雙鴻 (3324)
                 3. 金融業權值與補漲：富邦金 (2881)、兆豐金 (2886)、玉山金 (2884)、永豐金 (2890)、台中銀 (2812)、臺企銀 (2834)
                 4. 高科技廠房營造龍頭：潤弘 (2597)
 
-                三、 請依序輸出以下四個部分（絕對輸出格式要求：請直接輸出 HTML，嚴禁使用 Markdown 包裝或 Markdown 表格）：
+                三、 請依序輸出以下四個部分，直接輸出完整 HTML 代碼：
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px;'>【第一部分：前一交易日正式盤後撮合數據查核表】</h4>
-                  <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
-                    <tr style='background-color: #e9ecef;'>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>股票代號與名稱</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>交易日期</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>正式收盤價 (元)</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>漲跌點數與幅度 (%)</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>當日總成交量 (張)</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>查證來源網站</th>
-                    </tr>
-                    <!-- 在此填入查核結果的 HTML <tr> -->
-                  </table>
-
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第二部分：量化估價與潛在上漲空間矩陣】</h4>
-                  <p style='font-size: 12px; margin-bottom: 10px;'>以第一部分驗證的真實收盤價為基準，列出：</p>
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px;'>【第一部分：量化估價與潛在上漲空間矩陣】</h4>
+                  <p style='font-size: 12px; margin-bottom: 10px;'>以 Python 引擎驗證的真實收盤價為基準，列出：</p>
                   <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
                     <tr style='background-color: #e9ecef;'>
                       <th style='padding: 8px; border: 1px solid #ccc;'>股票代號與名稱</th>
                       <th style='padding: 8px; border: 1px solid #ccc;'>最新市價</th>
                       <th style='padding: 8px; border: 1px solid #ccc;'>便宜價</th>
                       <th style='padding: 8px; border: 1px solid #ccc;'>公允價值</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>合理價區間</th>
                       <th style='padding: 8px; border: 1px solid #ccc;'>昂貴價</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>法人共識目標價</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>潛在上漲空間 (距公允值 %)</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>距目標價空間 (%)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>當前狀態</th>
+                      <th style='padding: 8px; border: 1px solid #ccc;'>潛在上漲空間 (距公允值)</th>
                     </tr>
-                    <!-- 在此填入估價矩陣的 HTML <tr> -->
+                    <!-- 嚴格讀取【今日基礎全景數據】填入 TR 標籤。潛在上漲空間請自行以 (公允價值-市價)/市價 計算百分比。 -->
                   </table>
 
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第三部分：估價模型與計算方法說明】</h4>
-                  <p style='font-size: 13px; line-height: 1.8;'>
-                    詳細說明科技成長股（Forward P/E）、景氣循環記憶體（Cycle-Adjusted P/E & P/B）、金融/營造傳產（P/B & DDM 殖利率法）的具體估算參數與邏輯。
-                  </p>
-
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第四部分：最新即時焦點消息與產業重點分析】</h4>
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第二部分：估價模型與計算方法說明】</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
-                    <li>請精煉 4 到 5 點實質產業/重訊動態（涵蓋記憶體、AI、金融族群及潤弘），並短評對估值的影響。</li>
-                    <li>請給出各檔股票的關鍵支撐防守價位與實戰買賣策略。</li>
+                    <li><b>科技成長股 (Forward P/E)：</b>使用預估當年度 EPS 配合歷史 PE 中樞判定。</li>
+                    <li><b>景氣循環記憶體 (H-Model)：</b>短期爆發成長率上限放寬至 80%，平滑過渡至 2% 永續成長。</li>
+                    <li><b>金融/傳產 (RIM 超額報酬模型)：</b>取近三年 ROE 加權移動平均，推導公允淨值比(Target P/B)。</li>
+                  </ul>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第三部分：最新即時焦點消息面剖析與操作建議】</h4>
+                  <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
+                    <!-- 根據提供的【原始官方公告與新聞】，精煉記憶體、AI、金融族群及潤弘的最新動態，並短評對估值的影響。給出關鍵支撐防守價位。 -->
                   </ul>
                   
-                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>核心持股深度多空決策矩陣</h4>
+                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
                   <!-- 針對每一檔核心股重複以下結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
                     <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
-                       <b>基本面位階：</b> <!-- 寫出現在處於便宜/合理/昂貴區 --><br>
-                       <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數、散戶狀態與外資動向 --><br>
-                       <b>技術面：</b> <!-- 簡述 MA20 乖離與 RSI -->
+                       <b>基本面位階：</b> <!-- 引用上方表格狀態 --><br>
+                       <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數與散戶狀態 --><br>
+                       <b>技術面：</b> <!-- 簡述技術狀態 -->
                     </p>
-                    <h6 style='margin-bottom: 5px;'>下個交易日走勢決策樹與操作腳本</h6>
+                    <h6 style='margin-bottom: 5px;'>走勢決策樹與操作腳本</h6>
                     <pre style='background-color: #2b2b2b; color: #a9b7c6; padding: 10px; font-size: 12px; overflow-x: auto; border-radius: 4px; font-family: monospace;'>
-                    <!-- 依據上方紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境及各情境發生機率) -->
+                    <!-- 依據紀律繪製 ASCII 決策樹 (包含籌碼共振/左側下殺/量縮洗盤 等實戰情境) -->
                     </pre>
                   </div>
                 </div>
+                
+                【今日基礎全景數據】
+                {df_basic.to_string(index=False)}
                 
                 【原始官方公告與新聞】
                 {official_text_for_ai}
@@ -553,37 +554,37 @@ class TaiwanMarketTracker:
                 
                 target_models = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite']
                 response = None
-                api_call_count = 0 
-
+                
                 for model_name in target_models:
                     try:
                         print(f"嘗試使用模型: {model_name}...")
-                        model = genai.GenerativeModel(model_name)
-                        #model = genai.GenerativeModel(model_name, tools='google_search_retrieval')
+                        model = genai.GenerativeModel(model_name) # 無工具版本
                         for attempt in range(3):
                             try:
-                                api_call_count += 1
-                                print(f"➡️ 正在發送第 {api_call_count} 次 API 請求 (目標模型: {model_name}, 重試次數: {attempt})...")
                                 response = model.generate_content(prompt, safety_settings=safety_settings, request_options={"timeout": 150})
-                                print(f"✅ API 請求成功！本次排程總共消耗了 {api_call_count} 次 API 額度。")
+                                print(f"✅ API 請求成功！")
                                 break
                             except Exception as err:
                                 err_str = str(err).lower()
                                 if "429" in err_str and ("per day" in err_str or "perday" in err_str):
-                                    print(f"⚠️ {model_name} 每日額度已用完(非暫時性限制)，直接切換下一個備援模型...")
                                     raise err
                                 elif ("429" in err_str or "504" in err_str or "deadline" in err_str) and attempt < 2:
-                                    wait_seconds = 25 * (attempt + 1)
-                                    print(f"⚠️ 觸發伺服器限制或超時 ({err})，等待 {wait_seconds} 秒後重試...")
-                                    time.sleep(wait_seconds)
+                                    time.sleep(25 * (attempt + 1))
                                 else: raise err
                         if response: break
                     except: continue
 
-                if not response: raise Exception(f"所有可用模型皆無法產生內容。總共嘗試呼叫了 {api_call_count} 次 API。")
+                if not response: raise Exception(f"所有可用模型皆無法產生內容。")
+                
+                # 🚀 修正 3: 更強壯的 Markdown 標籤清除法
                 final_html = response.text.strip()
-                if final_html.startswith("```html"): final_html = final_html[7:]
-                if final_html.endswith("```"): final_html = final_html[:-3]
+                if final_html.startswith("```"):
+                    lines = final_html.split("\n")
+                    if lines[0].startswith("```"): lines = lines[1:]
+                    if lines[-1].startswith("```"): lines = lines[:-1]
+                    final_html = "\n".join(lines).strip()
+                    if final_html.startswith("html"): final_html = final_html[4:].strip()
+
                 return final_html
             except Exception as e:
                 print(f"Gemini API 呼叫失敗: {e}")
