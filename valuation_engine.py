@@ -411,6 +411,9 @@ class FinMindValuationEngine:
         bs_df = self._fetch_data("TaiwanStockBalanceSheet", stock_id, years_back=3)
         
         if fs_df.empty or bs_df.empty: 
+            # 🔍 暫時診斷 log：市場隱含成長率長期全部 N/A，先確認是不是這兩個
+            # 資料集本身就抓不到（bs_df 常見原因：token 權限不足、或被 rate limit）。
+            print(f"  [診斷] {stock_id} Tier1 資料缺席：fs_df.empty={fs_df.empty}, bs_df.empty={bs_df.empty}")
             return 0, 0, 0, 0, 0
 
         op_data = self._dedupe_by_date_maxvalue(fs_df[fs_df["type"].str.contains('OperatingIncome|營業利益', case=False, na=False)])
@@ -448,8 +451,11 @@ class FinMindValuationEngine:
                 return 0, 0, 0, 0, 0
             diluted_shares = share_capital / 10 
             
+            if nopat <= 0 or invested_capital <= 0:
+                print(f"  [診斷] {stock_id} Tier1 數值不合格：nopat={nopat:.0f}, invested_capital={invested_capital:.0f}, shares={diluted_shares:.0f}")
             return nopat, invested_capital, net_debt, diluted_shares, tax_rate
-        except:
+        except Exception as e:
+            print(f"  [診斷] {stock_id} Tier1 計算例外：{e}")
             return 0, 0, 0, 1, 0
 
     def calc_two_stage_fcff(self, nopat_0: float, high_growth: float, stable_growth: float, 

@@ -526,7 +526,7 @@ class TaiwanMarketTracker:
                 1. 歷史上下文徹底隔離：完全忽略本對話先前輪次中提及的數字。
                 2. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！【第一部分】表格必須涵蓋【今日基礎全景數據】裡「每一列」標的，一檔都不能少——下方清單二只是重點類股分類，用於第三部分新聞剖析參考，不是表格的篩選範圍。
                 3. 依賴提供的新聞：請運用下方提供的【原始官方公告與新聞】進行產業動態剖析。
-                4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】（不可使用 **粗體** 或 | 表格 |），必須完全使用標準的 HTML 標籤渲染。
+                4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】（不可使用 **粗體** 或 | 表格 |），必須完全使用標準的 HTML 標籤渲染。範本中以 <!-- --> 包起來的說明文字（包括「系統最高級別強制指令」那幾行）都是給你看的內部備註，絕對不要把這些說明文字本身複製到輸出結果裡。
                 5. 決策樹強制標示機率：在繪製 ASCII 決策樹時，【必須】在每個情境分支中，明確標註你預估的「發生機率」(如：機率 60%)。
                 6. 🔴 絕對反偷懶機制：本次【核心股深度量化籌碼】中共有 {core_count} 檔核心股（{core_portfolio_str}）。你在第四部分【必須】產出 {core_count} 個獨立的 <div> 區塊，一檔都不能少！嚴禁只寫一檔就結束！
 
@@ -567,7 +567,7 @@ class TaiwanMarketTracker:
                   </ul>
                   
                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
-                  <p style='font-size: 13px; font-weight: bold; color: #d32f2f;'>🔴 系統最高級別強制指令：本次清單共有 {core_count} 檔核心股：{core_portfolio_str}。你【必須】逐一生成完整的分析區塊，一檔都絕對不可省略！若你偷懶省略任何一檔，系統將直接崩潰！</p>
+                  <!-- 🔴 系統最高級別強制指令（絕對不要把這行文字複製到輸出結果裡）：本次清單共有 {core_count} 檔核心股：{core_portfolio_str}。你【必須】逐一生成完整的分析區塊，一檔都絕對不可省略！ -->
                   
                   <!-- 請在此處開始針對上述清單中的每一檔股票，重複以下 <div> 結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
@@ -641,11 +641,18 @@ class TaiwanMarketTracker:
                 # 沒出現的就只針對「缺漏的那幾檔」發一次小型補寫請求，插回報告尾端，
                 # 不影響已經產出的部分，也不會因為補寫失敗而讓整份報告掛掉。
                 try:
+                    def _has_real_analysis_block(html, name):
+                        # 🛠️ 修正：不能只查字串有沒有出現在任何地方——AI 有可能把系統指令
+                        # 文字本身複製貼到輸出裡，指令裡就帶有股票名稱/代碼，會讓單純的
+                        # 字串比對誤判「這檔已經寫過了」。改成只認真正的分析區塊標題
+                        # <h5>[股票名稱] 籌碼與估值矩陣分析</h5> 有沒有真的出現。
+                        pattern = re.escape(name) + r".{0,10}(籌碼與估值矩陣分析|決策矩陣分析)"
+                        return re.search(pattern, html) is not None
+
                     missing = [
                         item for item in PORTFOLIO
                         if item.get("is_core", False)
-                        and item["code"] not in final_html
-                        and item["name"] not in final_html
+                        and not _has_real_analysis_block(final_html, item["name"])
                     ]
                     if missing:
                         print(f"⚠️ 偵測到核心持股決策矩陣缺漏：{[m['name'] for m in missing]}，啟動針對性補寫...")
