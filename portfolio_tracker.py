@@ -141,6 +141,7 @@ class TaiwanMarketTracker:
 
             cheap_price, fair_price, target_price = 0.0, 0.0, 0.0
             implied_g_val = "N/A" # 🚀 新增變數，用來接 Reverse DCF 的結果
+            sanity_clamped = False
             
             if v_method == "pe":
                 res = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
@@ -161,6 +162,9 @@ class TaiwanMarketTracker:
                             method_ch = f"混合估值(PEG {peg_w}%/每股FCFE {fcfe_w}%)"
                         else:
                             method_ch = "混合估值(純PEG，資料不足降級)"
+                        if extra.get("sanity_clamped"):
+                            method_ch += " ⚠️已強制修正"
+                            sanity_clamped = True
             elif v_method == "pb":
                 res = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
                 if res: cheap_price, fair_price, target_price, _ = res
@@ -210,6 +214,9 @@ class TaiwanMarketTracker:
             else:
                 # 🛑 只要算不出合理價，就誠實標示資料不足，絕不顯示續抱
                 current_status = "⚠️ 資料不足/模型失效"
+
+            if sanity_clamped:
+                current_status += "（估值已校正）"
 
             total_cost += (s * cp)
             total_mkt += (s * price)
@@ -560,7 +567,9 @@ class TaiwanMarketTracker:
                   </ul>
                   
                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
-                  <!-- 🔴 系統強制指令：本次共有 {core_count} 檔核心股 ({core_portfolio_str})。你必須嚴格重複生成 {core_count} 次以下區塊，缺一不可！若你中斷或省略，將導致系統任務失敗！ -->
+                  <p style='font-size: 13px; font-weight: bold; color: #d32f2f;'>🔴 系統最高級別強制指令：本次清單共有 {core_count} 檔核心股：{core_portfolio_str}。你【必須】逐一生成完整的分析區塊，一檔都絕對不可省略！若你偷懶省略任何一檔，系統將直接崩潰！</p>
+                  
+                  <!-- 請在此處開始針對上述清單中的每一檔股票，重複以下 <div> 結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
                     <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
                     <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
@@ -568,13 +577,12 @@ class TaiwanMarketTracker:
                        <b>籌碼動能：</b> <!-- 引用傳入的籌碼分數與散戶狀態 --><br>
                        <b>技術面：</b> <!-- 簡述技術狀態 -->
                     </p>
-                    <h6 style='margin-bottom: 5px;'>走勢推演與操作情境 (需標註機率)</h6>
+                    <h6 style='margin-bottom: 5px;'>走勢推演與操作情境</h6>
                     <ul style='font-size: 12px; line-height: 1.6; margin-top: 0;'>
-                      <li><b>情境 A (機率 X%)：</b> <!-- 撰寫多方或突破情境與對應策略 --></li>
-                      <li><b>情境 B (機率 Y%)：</b> <!-- 撰寫震盪或洗盤情境與對應策略 --></li>
-                      <li><b>情境 C (機率 Z%)：</b> <!-- 撰寫空方或破底情境與對應策略 --></li>
+                      <li><b>情境 A (機率 X%)：</b> <!-- 多方突破情境與對應策略 --></li>
+                      <li><b>情境 B (機率 Y%)：</b> <!-- 震盪洗盤情境與對應策略 --></li>
+                      <li><b>情境 C (機率 Z%)：</b> <!-- 空方破底情境與對應策略 --></li>
                     </ul>
-                  </div>
                   </div>
                 </div>
                 
@@ -626,6 +634,75 @@ class TaiwanMarketTracker:
                     final_html = re.sub(r"^```(?:html)?\n?", "", final_html, flags=re.IGNORECASE)
                     final_html = re.sub(r"\n?```$", "", final_html)
                     final_html = final_html.strip()
+
+                # 🚀 修正 4：完整性檢查 + 針對性補寫
+                # 光靠 prompt 裡的「反偷懶機制」不能保證 AI 100% 遵守，這裡改成事後驗證：
+                # 檢查每一檔 is_core 標的的名稱/代碼是否真的出現在輸出裡，
+                # 沒出現的就只針對「缺漏的那幾檔」發一次小型補寫請求，插回報告尾端，
+                # 不影響已經產出的部分，也不會因為補寫失敗而讓整份報告掛掉。
+                try:
+                    missing = [
+                        item for item in PORTFOLIO
+                        if item.get("is_core", False)
+                        and item["code"] not in final_html
+                        and item["name"] not in final_html
+                    ]
+                    if missing:
+                        print(f"⚠️ 偵測到核心持股決策矩陣缺漏：{[m['name'] for m in missing]}，啟動針對性補寫...")
+                        missing_data_text = ""
+                        for item in missing:
+                            data = core_data_dict.get(item["code"])
+                            if not data: continue
+                            missing_data_text += f"\n--- 【{data.get('name')} ({item['code']}) 深度量化籌碼與技術面】 ---\n"
+                            for k, v in data.items():
+                                if k not in ["name", "code"]: missing_data_text += f"{k}: {v}\n"
+
+                        if missing_data_text:
+                            fixup_prompt = f"""
+                            你是量化投資經理。請只針對下方【核心股深度量化籌碼】列出的每一檔標的，
+                            各自產出一個獨立的 <div> 決策矩陣區塊（{len(missing)} 檔都要有，一檔都不能少），格式如下：
+
+                            <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
+                              <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
+                              <p style='font-size: 12px; line-height: 1.6; margin-bottom: 15px;'>
+                                 <b>基本面位階：</b> ...<br>
+                                 <b>籌碼動能：</b> ...<br>
+                                 <b>技術面：</b> ...
+                              </p>
+                              <h6 style='margin-bottom: 5px;'>走勢推演與操作情境</h6>
+                              <ul style='font-size: 12px; line-height: 1.6; margin-top: 0;'>
+                                <li><b>情境 A (機率 X%)：</b> ...</li>
+                                <li><b>情境 B (機率 Y%)：</b> ...</li>
+                                <li><b>情境 C (機率 Z%)：</b> ...</li>
+                              </ul>
+                            </div>
+
+                            嚴禁使用 Markdown 語法，只能輸出 HTML，不要輸出任何開頭或結尾的說明文字。
+
+                            【核心股深度量化籌碼】
+                            {missing_data_text}
+                            """
+                            for model_name in target_models:
+                                try:
+                                    fixup_model = genai.GenerativeModel(model_name)
+                                    fixup_resp = fixup_model.generate_content(
+                                        fixup_prompt, safety_settings=safety_settings,
+                                        request_options={"timeout": 90}
+                                    )
+                                    fixup_html = fixup_resp.text.strip()
+                                    fixup_match = re.search(r"(<div.*</div>)", fixup_html, re.DOTALL | re.IGNORECASE)
+                                    if fixup_match:
+                                        fixup_html = fixup_match.group(1)
+                                    last_div_idx = final_html.rfind("</div>")
+                                    if last_div_idx != -1 and fixup_html.strip().startswith("<div"):
+                                        final_html = final_html[:last_div_idx] + fixup_html + final_html[last_div_idx:]
+                                        print(f"✅ 補寫成功：{[m['name'] for m in missing]}")
+                                    break
+                                except Exception as fix_err:
+                                    print(f"補寫失敗({model_name}): {fix_err}")
+                                    continue
+                except Exception as e:
+                    print(f"完整性檢查/補寫過程發生例外，略過不影響主報告: {e}")
 
                 return final_html
             except Exception as e:

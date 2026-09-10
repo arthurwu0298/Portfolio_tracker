@@ -394,6 +394,17 @@ class FinMindValuationEngine:
     # ==============================================================
     # 🚀 FCFF 與 混合估值 (Blended Valuation) 系統實裝
     # ==============================================================
+    def _dedupe_by_date_maxvalue(self, df, subset_cols=('date',)):
+        """
+        🛠️ FinMind 每個科目常常有一個『佔比』雙胞胎列同時存在（例如 AccountsPayable
+        跟 AccountsPayable_per），用 str.contains 模糊比對時很容易兩列都抓進來。
+        同一個 date(/type) 只留數值最大的那列，用來過濾掉那些占比小數，
+        避免絕對金額跟占比被加在一起，算出離譜的加總。
+        """
+        if df.empty: return df
+        cols = list(subset_cols)
+        return df.sort_values(cols + ['value']).drop_duplicates(subset=cols, keep='last')
+
     def _get_nopat_and_ic(self, stock_id):
         """獲取 NOPAT、有效稅率與投入資本，用於計算 ROIC"""
         fs_df = self._fetch_data("TaiwanStockFinancialStatements", stock_id, years_back=3)
@@ -402,14 +413,14 @@ class FinMindValuationEngine:
         if fs_df.empty or bs_df.empty: 
             return 0, 0, 0, 0, 0
 
-        op_data = fs_df[fs_df["type"].str.contains('OperatingIncome|營業利益', case=False, na=False)]
-        pt_data = fs_df[fs_df["type"].str.contains('IncomeBeforeTax|稅前淨利', case=False, na=False)]
-        tax_data = fs_df[fs_df["type"].str.contains('IncomeTaxExpense|所得稅', case=False, na=False)]
+        op_data = self._dedupe_by_date_maxvalue(fs_df[fs_df["type"].str.contains('OperatingIncome|營業利益', case=False, na=False)])
+        pt_data = self._dedupe_by_date_maxvalue(fs_df[fs_df["type"].str.contains('IncomeBeforeTax|稅前淨利', case=False, na=False)])
+        tax_data = self._dedupe_by_date_maxvalue(fs_df[fs_df["type"].str.contains('IncomeTaxExpense|所得稅', case=False, na=False)])
         
-        eq_data = bs_df[bs_df["type"].str.contains('Equity|權益', case=False, na=False)]
-        debt_data = bs_df[bs_df["type"].str.contains('Debt|借款|公司債', case=False, na=False)]
-        cash_data = bs_df[bs_df["type"].str.contains('CashAndCashEquivalents|現金及約當現金', case=False, na=False)]
-        shares_data = bs_df[bs_df["type"].str.contains('OrdinaryShares|普通股股本', case=False, na=False)]
+        eq_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('Equity|權益', case=False, na=False)])
+        debt_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('Debt|借款|公司債', case=False, na=False)], subset_cols=('date', 'type'))
+        cash_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('CashAndCashEquivalents|現金及約當現金', case=False, na=False)])
+        shares_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('OrdinaryShares|普通股股本', case=False, na=False)])
 
         try:
             op_ttm = op_data.sort_values('date').tail(4)['value'].sum()
@@ -590,6 +601,38 @@ class FinMindValuationEngine:
 
         return value_per_share, terminal_ratio, roe, warnings
 
+    def _sanity_clamp(self, current_price, cheap, fair, exp, extra):
+        """
+        🛡️ 事後校驗（最後一道防線）：不管走哪個 Tier，只要財報科目誤判造成
+        算出的價格離現價太遠（例如現價的 3~7 倍），就強制夾住並標記，
+        避免離譜數字直接送進信件。這是粗略的斷路器，不是精確估值。
+        """
+        if current_price <= 0:
+            return cheap, fair, exp, extra
+
+        FAIR_CAP, EXP_CAP, FLOOR = 2.2, 3.2, 0.25  # 合理價≤2.2倍現價、昂貴價≤3.2倍、便宜價≥0.25倍
+        clamped = False
+
+        if fair > current_price * FAIR_CAP:
+            fair = round(current_price * FAIR_CAP, 1)
+            clamped = True
+        if exp > current_price * EXP_CAP:
+            exp = round(current_price * EXP_CAP, 1)
+            clamped = True
+        if exp < fair:
+            exp = round(fair * 1.15, 1)
+            clamped = True
+        if cheap > fair:
+            cheap = round(fair * 0.85, 1)
+            clamped = True
+        if cheap < current_price * FLOOR:
+            cheap = round(current_price * FLOOR, 1)
+            clamped = True
+
+        extra = dict(extra) if extra else {}
+        extra["sanity_clamped"] = clamped
+        return cheap, fair, exp, extra
+
     def calc_blended_valuation(self, stock_id: str, current_price: float, current_pb: float = 0.0):
         """
         🚀 混合估值系統大腦：整合 PEG、FCFF、每股 FCFE 與 Reverse DCF
@@ -642,13 +685,13 @@ class FinMindValuationEngine:
                 blended_fair = round((peg_fair * peg_weight) + (dcf_fair * dcf_weight), 1)
                 blended_exp = round((peg_exp * peg_weight) + (dcf_exp * dcf_weight), 1)
 
-                return blended_cheap, blended_fair, blended_exp, {
+                return self._sanity_clamp(current_price, blended_cheap, blended_fair, blended_exp, {
                     "implied_g": implied_g_pct,
                     "dcf_weight": round(dcf_weight * 100, 1),
                     "peg_weight": round(peg_weight * 100, 1),
                     "fcfe_weight": 0,
                     "model": "FCFF"
-                }
+                })
             # dcf_res 為 None（成長/ROIC 假設不合理）→ 往下試 Tier 2
 
         # 3. Tier 2：每股 FCFE（股本科目查無/單位不明時的備援，不依賴總股數）
@@ -682,19 +725,19 @@ class FinMindValuationEngine:
             blended_fair = round((peg_fair * peg_weight) + (fcfe_fair * fcfe_weight), 1)
             blended_exp = round((peg_exp * peg_weight) + (fcfe_exp * fcfe_weight), 1)
 
-            return blended_cheap, blended_fair, blended_exp, {
+            return self._sanity_clamp(current_price, blended_cheap, blended_fair, blended_exp, {
                 "implied_g": implied_g_pct,
                 "dcf_weight": 0,
                 "peg_weight": round(peg_weight * 100, 1),
                 "fcfe_weight": round(fcfe_weight * 100, 1),
                 "model": "FCFE/share"
-            }
+            })
 
         # 4. Tier 3：純 PEG（連 EPS/BVPS 都拿不到，或 FCFE 模型假設不合理）
-        return peg_cheap, peg_fair, peg_exp, {
+        return self._sanity_clamp(current_price, peg_cheap, peg_fair, peg_exp, {
             "implied_g": implied_g_pct,
             "dcf_weight": 0,
             "peg_weight": 100,
             "fcfe_weight": 0,
             "model": "PEG"
-        }
+        })
