@@ -1,56 +1,130 @@
 # portfolio_config.py
 import os
 
+# ==============================================================================
+# 🏛️ 金控四大分類原型規格定義 (Financial Holding Company Archetypes)
+# ==============================================================================
+FHC_ARCHETYPES = {
+    "BANK_DOMINANT": {
+        "description": "銀行型金控：以存放款利差與手續費為核心，獲利波動低、資本要求相對明確",
+        "default_ke_range": [0.068, 0.075],
+        "default_g_range": [0.015, 0.020],
+        "default_book_value_policy": "reported",
+        "confidence_ceiling": "A"
+    },
+    "INSURANCE_DOMINANT": {
+        "description": "壽險型金控：資產負債具高利率與市場敏感性，需考慮 OCI 與資產重分類權重",
+        "default_ke_range": [0.078, 0.088],
+        "default_g_range": [0.018, 0.025],
+        "default_book_value_policy": "blended",
+        "confidence_ceiling": "A"
+    },
+    "TRANSITION_MA": {
+        "description": "併購整合/過渡期金控：處於換股增資、股本膨脹或業務整併期，資料存在期別錯配",
+        "default_ke_range": [0.075, 0.085],
+        "default_g_range": [0.018, 0.025],
+        "default_book_value_policy": "reported",
+        "confidence_ceiling": "B"  # 整合完成前限制最高評級
+    },
+    "MIXED_FHC": {
+        "description": "綜合型金控：銀行、證券、創投多引擎，獲利與資本市場高度連動",
+        "default_ke_range": [0.073, 0.082],
+        "default_g_range": [0.018, 0.023],
+        "default_book_value_policy": "reported",
+        "confidence_ceiling": "A"
+    }
+}
+
+# ==============================================================================
+# 📊 投資組合標的配置
+# ==============================================================================
 PORTFOLIO = [
     {"code": "3130", "name": "一零四", "market": "TWSE", "shares": 1500, "cost_per_share": 10.0, "valuation_method": "pe"},
-    
-    # 🏛️ 兆豐金：公股防禦型（低資金成本、成熟保守成長、高配息穩定性）
+
+    # 🏛️ 兆豐金 (2886) - BANK_DOMINANT
     {
         "code": "2886", "name": "兆豐金", "market": "TWSE", "shares": 2000, "cost_per_share": 30.0,
         "valuation": {
             "method": "rim",
-            "risk": {"ke": 0.070, "ke_range": [0.068, 0.075]},
-            "growth": {
-                "method": "manual_normalized", "g": 0.018, "g_range": [0.015, 0.020],
-                "payout_ratio": 0.74, "g_reinvestment_efficiency": 0.71
+            "archetype": "BANK_DOMINANT",
+            "risk": {
+                "ke": 0.070,
+                "ke_range": [0.068, 0.075]
             },
-            "profitability": {"normalized_roe": 0.098, "roe_range": [0.093, 0.103]},
-            "book_value": {"policy": "reported", "status": "confirmed"}
-        }
-    },
-    
-    # 🏦 玉山金：併購壽險轉型型（先以現行淨值估算並標記過渡期，新財報公佈時自動無縫升級）
-    {
-        "code": "2884", "name": "玉山金", "market": "TWSE", "shares": 21000, "cost_per_share": 28.5, "is_core": True,
-        "valuation": {
-            "method": "rim",
-            "risk": {"ke": 0.078, "ke_range": [0.075, 0.083]},
             "growth": {
-                "method": "manual_normalized", "g": 0.022, "g_range": [0.018, 0.025],
-                "payout_ratio": 0.66, "g_reinvestment_efficiency": 0.48
+                "method": "manual_normalized",
+                "g": 0.018,
+                "g_range": [0.015, 0.020],
+                "payout_ratio": 0.74,
+                "g_reinvestment_efficiency": 0.71
             },
-            "profitability": {"normalized_roe": 0.135, "roe_range": [0.125, 0.140]},
+            "profitability": {
+                "normalized_roe": 0.098,
+                "roe_range": [0.093, 0.103]
+            },
             "book_value": {
                 "policy": "reported",
-                "require_post_event": True,
-                "effective_date": "2026-09-01",
-                "status": "transitional"
+                "status": "confirmed"
             }
         }
     },
 
-    # 👑 富邦金：壽險龍頭（Blended BPS 考慮資產重分類，平滑單期景氣峰值至 14% 正常化 ROE）
+    # 🏦 玉山金 (2884) - TRANSITION_MA
+    {
+        "code": "2884", "name": "玉山金", "market": "TWSE", "shares": 21000, "cost_per_share": 28.5, "is_core": True,
+        "valuation": {
+            "method": "rim",
+            "archetype": "TRANSITION_MA",
+            "risk": {
+                "ke": 0.078,
+                "ke_range": [0.075, 0.083]
+            },
+            "growth": {
+                "method": "manual_normalized",
+                "g": 0.022,
+                "g_range": [0.018, 0.025],
+                "payout_ratio": 0.66,
+                "g_reinvestment_efficiency": 0.48
+            },
+            "profitability": {
+                "normalized_roe": 0.135,
+                "roe_range": [0.125, 0.140]
+            },
+            "book_value": {
+                "policy": "reported",
+                "require_post_event": True,
+                "effective_date": "2026-09-01",
+                "status": "transitional"  # 過渡期：先以現行淨值計算並標記示警，新財報進入後自動升級
+            }
+        }
+    },
+
+    # 👑 富邦金 (2881) - INSURANCE_DOMINANT
     {
         "code": "2881", "name": "富邦金", "market": "TWSE", "shares": 100000, "cost_per_share": 50.0, "is_core": True,
         "valuation": {
             "method": "rim",
-            "risk": {"ke": 0.082, "ke_range": [0.078, 0.088]},
-            "growth": {
-                "method": "manual_normalized", "g": 0.023, "g_range": [0.018, 0.025],
-                "payout_ratio": 0.50, "g_reinvestment_efficiency": 0.33
+            "archetype": "INSURANCE_DOMINANT",
+            "risk": {
+                "ke": 0.082,
+                "ke_range": [0.078, 0.088]
             },
-            "profitability": {"normalized_roe": 0.140, "roe_range": [0.125, 0.150]},
-            "book_value": {"policy": "blended", "adjusted_weight": 0.30, "status": "confirmed"}
+            "growth": {
+                "method": "manual_normalized",
+                "g": 0.023,
+                "g_range": [0.018, 0.025],
+                "payout_ratio": 0.50,
+                "g_reinvestment_efficiency": 0.33
+            },
+            "profitability": {
+                "normalized_roe": 0.140,
+                "roe_range": [0.125, 0.150]
+            },
+            "book_value": {
+                "policy": "blended",
+                "adjusted_weight": 0.30,
+                "status": "confirmed"
+            }
         }
     },
 
@@ -61,28 +135,69 @@ PORTFOLIO = [
     {"code": "3017", "name": "奇鋐", "market": "TWSE", "shares": 1000, "cost_per_share": 600.0, "is_core": False, "valuation_method": "peg"},
     {"code": "3324", "name": "雙鴻", "market": "TPEx", "shares": 1000, "cost_per_share": 600.0, "is_core": False, "valuation_method": "peg"},
 
-    # 週期與記憶體族群（零成本改為 None 杜絕除以零；創見改採 pb 法）
+    # 週期與記憶體族群（零成本設為 None 防呆；創見改用 pb 循環估值）
     {"code": "2408", "name": "南亞科", "market": "TWSE", "shares": 100000, "cost_per_share": None, "cost_basis_status": "unknown", "is_core": False, "valuation_method": "peg"},
     {"code": "2344", "name": "華邦電", "market": "TWSE", "shares": 100000, "cost_per_share": None, "cost_basis_status": "unknown", "is_core": False, "valuation_method": "peg"},
     {"code": "2451", "name": "創見", "market": "TWSE", "shares": 1200, "cost_per_share": 150.0, "is_core": False, "valuation_method": "pb"},
 
-    {"code": "2812", "name": "台中銀", "market": "TWSE", "shares": 40000, "cost_per_share": 16.0, "valuation_method": "rim", "payout_ratio": 0.25},
-    {"code": "2330", "name": "台積電", "market": "TWSE", "shares": 30, "cost_per_share": 1900.0, "valuation_method": "peg"},
-    {"code": "2834", "name": "台企銀", "market": "TWSE", "shares": 8000, "cost_per_share": None, "cost_basis_status": "unknown", "valuation_method": "rim", "payout_ratio": 0.24},
+    # 🏦 台中銀 (2812) - BANK_DOMINANT
+    {
+        "code": "2812", "name": "台中銀", "market": "TWSE", "shares": 40000, "cost_per_share": 16.0,
+        "valuation": {
+            "method": "rim",
+            "archetype": "BANK_DOMINANT",
+            "risk": {"ke": 0.072, "ke_range": [0.068, 0.076]},
+            "growth": {"method": "manual_normalized", "g": 0.018, "g_range": [0.015, 0.020], "payout_ratio": 0.25},
+            "profitability": {"normalized_roe": 0.105, "roe_range": [0.098, 0.112]},
+            "book_value": {"policy": "reported", "status": "confirmed"}
+        }
+    },
 
-    # 📈 永豐金：核心銀行穩健 + 證券併購題材（設定 5% 整合期風險折價至 2027-03-31）
+    {"code": "2330", "name": "台積電", "market": "TWSE", "shares": 30, "cost_per_share": 1900.0, "valuation_method": "peg"},
+
+    # 🏛️ 台企銀 (2834) - BANK_DOMINANT
+    {
+        "code": "2834", "name": "台企銀", "market": "TWSE", "shares": 8000, "cost_per_share": 14, "cost_basis_status": "unknown",
+        "valuation": {
+            "method": "rim",
+            "archetype": "BANK_DOMINANT",
+            "risk": {"ke": 0.072, "ke_range": [0.068, 0.076]},
+            "growth": {"method": "manual_normalized", "g": 0.016, "g_range": [0.012, 0.020], "payout_ratio": 0.24},
+            "profitability": {"normalized_roe": 0.092, "roe_range": [0.085, 0.098]},
+            "book_value": {"policy": "reported", "status": "confirmed"}
+        }
+    },
+
+    # 📈 永豐金 (2890) - TRANSITION_MA
     {
         "code": "2890", "name": "永豐金", "market": "TWSE", "shares": 2000, "cost_per_share": 20.0,
         "valuation": {
             "method": "rim",
-            "risk": {"ke": 0.076, "ke_range": [0.073, 0.082]},
-            "growth": {
-                "method": "manual_normalized", "g": 0.022, "g_range": [0.018, 0.025],
-                "payout_ratio": 0.56, "g_reinvestment_efficiency": 0.37
+            "archetype": "TRANSITION_MA",
+            "risk": {
+                "ke": 0.076,
+                "ke_range": [0.073, 0.082]
             },
-            "profitability": {"normalized_roe": 0.135, "roe_range": [0.125, 0.145]},
-            "book_value": {"policy": "reported", "status": "confirmed"},
-            "ma_risk": {"enabled": True, "discount": 0.05, "until": "2027-03-31"}
+            "growth": {
+                "method": "manual_normalized",
+                "g": 0.022,
+                "g_range": [0.018, 0.025],
+                "payout_ratio": 0.56,
+                "g_reinvestment_efficiency": 0.37
+            },
+            "profitability": {
+                "normalized_roe": 0.135,
+                "roe_range": [0.125, 0.145]
+            },
+            "book_value": {
+                "policy": "reported",
+                "status": "confirmed"
+            },
+            "ma_risk": {
+                "enabled": True,
+                "discount": 0.05,
+                "until": "2027-03-31"
+            }
         }
     },
 

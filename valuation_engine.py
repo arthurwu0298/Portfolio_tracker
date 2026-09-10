@@ -9,6 +9,15 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 
+# 🚀 動態匯入金控四大原型設定
+try:
+    from portfolio_config import FHC_ARCHETYPES
+except ImportError:
+    FHC_ARCHETYPES = {}
+
+# ==========================================
+# 🚀 定義 DCF 估值結果的資料結構
+# ==========================================
 @dataclass
 class DCFResult:
     enterprise_value: float
@@ -335,8 +344,22 @@ class FinMindValuationEngine:
     # 🚀 四層資料驅動超額報酬模型 (RIM) - 真情境矩陣與隱含 ROE 引擎
     # ==============================================================
     def calc_residual_income_valuation(self, stock_id: str, current_price: float, current_pb: float, val_cfg: dict = None):
+        """
+        四層架構 RIM 模型：
+        1. 讀取金控原型 (Archetype) 預設參數
+        2. 動態檢驗 BPS 日期與過渡狀態
+        3. 推演 Bear/Base/Bull 三情境
+        4. 反推市場隱含 ROE 預期
+        """
         if current_price <= 0: return 0, 0, 0, None
         val_cfg = val_cfg or {}
+        
+        # 0. 繼承原型 (Archetype) 預設值
+        archetype_key = val_cfg.get("archetype", "MIXED_FHC")
+        arch_defaults = FHC_ARCHETYPES.get(archetype_key, {})
+        confidence_ceiling = arch_defaults.get("confidence_ceiling", "A")
+        default_policy = arch_defaults.get("default_book_value_policy", "reported")
+
         bv_cfg = val_cfg.get("book_value", {})
 
         # 1. 抓取最新淨值與資料日期
@@ -351,7 +374,7 @@ class FinMindValuationEngine:
         if current_pb <= 0: return 0, 0, 0, None
         reported_bps = current_price / current_pb
 
-        # 2. 動態檢驗事件生效日（如 2026-09-01 玉山金合併）
+        # 2. 動態檢驗事件生效日與資料狀態
         is_interim = False
         eff_date = bv_cfg.get("effective_date")
         if bv_cfg.get("require_post_event") and eff_date:
@@ -360,10 +383,11 @@ class FinMindValuationEngine:
             else:
                 bv_cfg["status"] = "confirmed"
 
-        # 淨值口徑處理（富邦金 blended 政策）
-        policy = bv_cfg.get("policy", "reported")
+        # 淨值口徑處理（支援 Blended BPS）
+        policy = bv_cfg.get("policy", default_policy)
         if policy == "blended":
             adjusted_weight = bv_cfg.get("adjusted_weight", 0.3)
+            # 參考富邦金歷史財報口徑比值估算 (109.3 / 83.7)
             adjusted_bps = reported_bps * 1.306
             valuation_bps = (reported_bps * (1 - adjusted_weight)) + (adjusted_bps * adjusted_weight)
         else:
@@ -374,13 +398,17 @@ class FinMindValuationEngine:
         growth_cfg = val_cfg.get("growth", {})
         profit_cfg = val_cfg.get("profitability", {})
 
-        ke_fair = risk_cfg.get("ke", 0.075)
-        ke_low, ke_high = risk_cfg.get("ke_range", [ke_fair - 0.005, ke_fair + 0.005])
+        # 資金成本 (Ke) - 支援區間
+        def_ke_range = arch_defaults.get("default_ke_range", [0.070, 0.080])
+        ke_low, ke_high = risk_cfg.get("ke_range", def_ke_range)
+        ke_fair = risk_cfg.get("ke", (ke_low + ke_high) / 2.0)
 
-        g_fair = growth_cfg.get("g", 0.020)
-        g_low, g_high = growth_cfg.get("g_range", [g_fair - 0.003, g_fair + 0.003])
+        # 永續成長率 (g) - 支援區間
+        def_g_range = arch_defaults.get("default_g_range", [0.015, 0.020])
+        g_low, g_high = growth_cfg.get("g_range", def_g_range)
+        g_fair = growth_cfg.get("g", (g_low + g_high) / 2.0)
 
-        # 正常化 ROE（未設定則以三年歷史平滑均值回退）
+        # 正常化 ROE (未設定則採歷史 3 年平滑均值)
         roe_fair = profit_cfg.get("normalized_roe", self._get_3yr_avg_roe(stock_id) or 0.10)
         roe_low, roe_high = profit_cfg.get("roe_range", [roe_fair - 0.01, roe_fair + 0.01])
 
@@ -397,7 +425,7 @@ class FinMindValuationEngine:
         base_fair = valuation_bps * pb_base
         target_value = valuation_bps * pb_bull
 
-        # 4. 併購整合風險修正 (永豐金控京城銀整合期折價)
+        # 4. 併購整合風險修正 (如永豐金整合期折價)
         ma_cfg = val_cfg.get("ma_risk", {})
         ma_discount = 0.0
         if ma_cfg.get("enabled", False):
@@ -413,11 +441,14 @@ class FinMindValuationEngine:
         implied_roe = (curr_actual_pb * (ke_fair - g_fair)) + g_fair
         implied_roe_pct = round(implied_roe * 100, 1)
 
+        # 決策最終可信度 (Confidence Rating)
+        final_confidence = "C" if is_interim else confidence_ceiling
+
         return final_cheap, final_fair, final_target, {
             "valuation_bps": round(valuation_bps, 2),
             "pb_base": round(pb_base, 2),
             "implied_roe": f"{implied_roe_pct}% (基準差:{round((implied_roe - roe_fair)*100, 1):+}%)",
-            "confidence": "C" if is_interim else "A",
+            "confidence": final_confidence,
             "is_interim": is_interim,
             "bps_date_used": latest_bps_date or "現行"
         }

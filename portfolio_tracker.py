@@ -43,6 +43,7 @@ class TaiwanMarketTracker:
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
         self.twse_prices, self.tpex_prices = {}, {}
         self.twse_metrics, self.tpex_metrics = {}, {}
+        self.consensus_targets = {}  # 🚀 新增：儲存法人共識目標價
         self.fetch_errors = []
         self.valuation_engine = FinMindValuationEngine(token=FINMIND_TOKEN, db_file=DB_FILE)
         self.init_db()
@@ -98,27 +99,34 @@ class TaiwanMarketTracker:
                         }
         except Exception as e: self.fetch_errors.append(f"TPEx估值API請求失敗: {e}")
 
+        print("📥 [階段一.五] 抓取 Yahoo Finance 法人共識目標價與備援報價...")
         for item in PORTFOLIO:
             c, m = item["code"], item["market"]
             p = self.twse_prices.get(c) if m == "TWSE" else self.tpex_prices.get(c)
             mets = self.twse_metrics.get(c) if m == "TWSE" else self.tpex_metrics.get(c)
 
-            if not p or not mets or mets.get('pe', 0.0) == 0.0:
-                try:
-                    yf_ticker = f"{c}.TW" if m == "TWSE" else f"{c}.TWO"
-                    info = yf.Ticker(yf_ticker).info
-                    if not p:
-                        fallback_p = safe_float(info.get("currentPrice", info.get("regularMarketPrice", 0.0)))
-                        if fallback_p > 0:
-                            if m == "TWSE": self.twse_prices[c] = fallback_p
-                            else: self.tpex_prices[c] = fallback_p
-                    if not mets or mets.get('pe', 0.0) == 0.0:
-                        dy = safe_float(info.get("dividendYield", 0.0))
-                        if dy > 0 and dy < 1: dy *= 100
-                        new_metrics = {"pe": safe_float(info.get("trailingPE", 0.0)), "pb": safe_float(info.get("priceToBook", 0.0)), "yield": dy}
-                        if m == "TWSE": self.twse_metrics[c] = new_metrics
-                        else: self.tpex_metrics[c] = new_metrics
-                except Exception: pass
+            try:
+                yf_ticker = f"{c}.TW" if m == "TWSE" else f"{c}.TWO"
+                info = yf.Ticker(yf_ticker).info
+                
+                # 🚀 抓取法人機構平均目標價
+                tp = info.get("targetMeanPrice") or info.get("targetMedianPrice")
+                if tp:
+                    self.consensus_targets[c] = round(float(tp), 1)
+
+                # 價格與指標備援
+                if not p:
+                    fallback_p = safe_float(info.get("currentPrice", info.get("regularMarketPrice", 0.0)))
+                    if fallback_p > 0:
+                        if m == "TWSE": self.twse_prices[c] = fallback_p
+                        else: self.tpex_prices[c] = fallback_p
+                if not mets or mets.get('pe', 0.0) == 0.0:
+                    dy = safe_float(info.get("dividendYield", 0.0))
+                    if dy > 0 and dy < 1: dy *= 100
+                    new_metrics = {"pe": safe_float(info.get("trailingPE", 0.0)), "pb": safe_float(info.get("priceToBook", 0.0)), "yield": dy}
+                    if m == "TWSE": self.twse_metrics[c] = new_metrics
+                    else: self.tpex_metrics[c] = new_metrics
+            except Exception: pass
 
     def calculate_basic_portfolio(self):
         self.fetch_market_data()
@@ -132,6 +140,7 @@ class TaiwanMarketTracker:
 
             market_price = self.twse_prices.get(c) if m == "TWSE" else self.tpex_prices.get(c)
             price = market_price if (market_price is not None and market_price > 0) else None
+            consensus_tp = self.consensus_targets.get(c, "N/A") # 🚀 讀取法人目標價
 
             metrics = self.twse_metrics.get(c, {}) if m == "TWSE" else self.tpex_metrics.get(c, {})
             current_pe = metrics.get("pe", 0.0)
@@ -140,10 +149,9 @@ class TaiwanMarketTracker:
             val_cfg = item.get("valuation", {})
             v_method = val_cfg.get("method") or item.get("valuation_method", "manual")
             method_ch = METHOD_MAP.get(v_method, "手動設定")
-            extra_note = item.get("note", "")
 
             cheap_price, fair_price, target_price = 0.0, 0.0, 0.0
-            implied_display = "N/A"
+            eval_lines = [] # 🚀 儲存白話文條列資料
             sanity_clamped = False
             is_interim = False
 
@@ -153,41 +161,52 @@ class TaiwanMarketTracker:
                 if v_method == "pe":
                     res = self.valuation_engine.calc_pe_valuation(c, price, current_pe)
                     if res: cheap_price, fair_price, target_price, _ = res
+                    eval_lines.extend(["⚪ 採歷史本益比週期對比", "🔍 無模型反推市場預期"])
                 elif v_method == "peg":
                     res = self.valuation_engine.calc_blended_valuation(c, price, current_pb)
                     if res and len(res) == 4: 
                         cheap_price, fair_price, target_price, extra = res
                         if extra:
-                            implied_g_val = extra.get("implied_g", "N/A")
-                            implied_display = f"{implied_g_val}%" if implied_g_val != "N/A" else "N/A"
+                            implied_g = extra.get("implied_g", "N/A")
+                            eval_lines.extend(["📊 採成長股動態推估", f"🔍 現價隱含預期：維持 {implied_g}% 成長率"])
+                            
                             dcf_w = extra.get("dcf_weight", 0)
                             fcfe_w = extra.get("fcfe_weight", 0)
-                            peg_w = extra.get("peg_weight", 100)
-                            if dcf_w > 0: method_ch = f"混合估值(PEG {peg_w}%/DCF {dcf_w}%)"
-                            elif fcfe_w > 0: method_ch = f"混合估值(PEG {peg_w}%/每股FCFE {fcfe_w}%)"
-                            else: method_ch = "混合估值(純PEG)"
+                            if dcf_w > 0: method_ch = "混合估值 (結合 DCF)"
+                            elif fcfe_w > 0: method_ch = "混合估值 (結合每股 FCFE)"
+                            else: method_ch = "混合估值 (純 PEG)"
+                            
                             if extra.get("sanity_clamped"):
-                                method_ch += " ⚠️強制修正"
+                                method_ch += " ⚠️強制校正"
                                 sanity_clamped = True
                 elif v_method == "pb":
                     res = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
                     if res: cheap_price, fair_price, target_price, _ = res
+                    eval_lines.extend(["⚪ 採歷史淨值比對比", "🔍 無模型反推市場預期"])
                 elif v_method == "trend":
                     res = self.valuation_engine.calc_price_trend_valuation(c, price)
                     if res: cheap_price, fair_price, target_price, _, _ = res
+                    eval_lines.extend(["⚪ 採均線乖離率位階判定", "🔍 無模型反推市場預期"])
                 elif v_method == "rim":
                     res = self.valuation_engine.calc_residual_income_valuation(c, price, current_pb, val_cfg=val_cfg)
                     if res and len(res) == 4: 
                         cheap_price, fair_price, target_price, rim_extra = res
                         method_ch = "超額報酬模型(RIM)"
                         if rim_extra:
-                            implied_display = rim_extra.get("implied_roe", "N/A")
+                            conf = rim_extra.get("confidence", "B")
                             is_interim = rim_extra.get("is_interim", False)
+                            implied_roe_str = rim_extra.get("implied_roe", "N/A")
+                            
+                            # 🚀 白話文轉換
+                            if is_interim: eval_lines.append("⚠️ 處於併購過渡期，需等新財報發布")
+                            else: eval_lines.append(f"✅ 模型與財報可信度：{conf} 級")
+                            eval_lines.append(f"🔍 現價反映預期：隱含 ROE 達 {implied_roe_str}")
                 elif v_method == "yield":
                     payout_ratio = item.get("payout_ratio", 0.5) 
                     res = self.valuation_engine.calc_ddm_valuation(c, price, payout_ratio)
                     if res and len(res) == 4: cheap_price, fair_price, target_price, _ = res
                     method_ch = "H-Model 雙階折現"
+                    eval_lines.extend(["⚪ 採股利折現模型", "🔍 無模型反推市場預期"])
                 elif v_method == "etf_yield":
                     div_total = self.valuation_engine.get_recent_dividend(c)
                     y_cheap, y_fair, y_target = self.valuation_engine.calc_yield_percentile_bounds(c)
@@ -199,6 +218,7 @@ class TaiwanMarketTracker:
                         cheap_price = round(div_total / (y_cheap / 100), 1)
                         fair_price = round(div_total / (y_fair / 100), 1)
                         target_price = round(div_total / (y_target / 100), 1)
+                    eval_lines.extend(["⚪ 採歷史平均殖利率推算", "🔍 無模型反推市場預期"])
 
                 is_financial_or_etf = str(c).startswith('28') or str(c).startswith('58') or str(c).startswith('00')
                 if not is_financial_or_etf and v_method not in ["trend", "etf_yield", "manual"] and price > 0:
@@ -207,8 +227,9 @@ class TaiwanMarketTracker:
                         cheap_price = max(cheap_price, graham_floor)
                         fair_price = max(fair_price, graham_floor * 1.2)
                         target_price = max(target_price, graham_floor * 1.5)
-                        extra_note += f"[葛拉漢保護: {graham_floor}]"
+                        eval_lines.append(f"🛡️ 觸發葛拉漢安全底線保護")
 
+                # 🚀 狀態判定更名為「操作建議」
                 if price > 0 and fair_price > 0:
                     if price <= cheap_price: current_status = "便宜加碼"
                     elif price >= target_price: current_status = "達標停利"
@@ -226,12 +247,16 @@ class TaiwanMarketTracker:
             if cp is not None and cp > 0:
                 total_cost += (s * cp)
 
+            # 🚀 將條列資料組裝為字串供 DataFrame 顯示，Prompt 稍後會叫 AI 轉成 HTML 列表
+            market_eval_text = "\n".join(eval_lines) if eval_lines else "無特殊數據"
+
             records.append({
                 "代碼": c, "名稱": item["name"], "現價": price if price else "查無報價", 
-                "便宜價(保守)": cheap_price, "公允價(基準)": fair_price, "昂貴價(樂觀)": target_price,
-                "當前狀態": current_status, 
+                "法人目標價": consensus_tp,
+                "便宜價(悲觀)": cheap_price, "公允價(基準)": fair_price, "昂貴價(樂觀)": target_price,
+                "操作建議": current_status, 
                 "指定估價法": method_ch, 
-                "市場隱含成長/ROE": implied_display
+                "市場預估與資料狀況": market_eval_text
             })
 
         ret_rate = round(((total_mkt - total_cost) / total_cost) * 100, 2) if total_cost > 0 else 0.0
@@ -493,13 +518,11 @@ class TaiwanMarketTracker:
         if GEMINI_API_KEY:
             print("🤖 正在呼叫 Gemini API 進行決策矩陣運算...")
             try:
-                # 🚀 升級點 1：全面導入最新 google.genai 官方架構
                 from google import genai
                 from google.genai import types
                 
                 client = genai.Client(api_key=GEMINI_API_KEY)
                 
-                # 🚀 升級點 2：使用最新強型別 SafetySettings
                 safety_settings = [
                     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
                     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
@@ -516,6 +539,7 @@ class TaiwanMarketTracker:
                 core_portfolio_str = "、".join(core_portfolio_names)
                 core_count = len(core_portfolio_names)
                 
+                # 🚀 升級點：透過 Prompt 要求 AI 將合併後的欄位進行上色、條列與白話文渲染
                 prompt = f"""
                 你是一位頂尖的量化投資經理、實戰交易員與財經專欄主編。請根據下方 Python 引擎計算的「基礎全景數據」、「官方新聞」與「核心股深度量化籌碼」，產出專業盤後報告。
                 
@@ -523,12 +547,13 @@ class TaiwanMarketTracker:
                 【系統指令：嚴格數據依賴・歷史上下文隔離・嚴禁腦補推算・反偷懶強制機制】
 
                 一、 核心約束規則（違反任一項即判定回答失敗）：
-                1. 歷史上下文徹底隔離：完全忽略本對話先前輪次中提及的數字。
-                2. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！【第一部分】表格必須涵蓋【今日基礎全景數據】裡「每一列」標的，一檔都不能少。
-                3. 依賴提供的新聞：請運用下方提供的【原始官方公告與新聞】進行產業動態剖析。
-                4. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】，必須完全使用標準的 HTML 標籤渲染。範本中以 <!-- --> 包起來的說明文字絕對不要複製到輸出結果裡。
-                5. 決策樹強制標示機率：在情境推演中，【必須】明確標註你預估的「發生機率」(如：機率 60%)。
-                6. 🔴 絕對反偷懶機制：本次【核心股深度量化籌碼】中共有 {core_count} 檔核心股（{core_portfolio_str}）。你在第四部分【必須】產出 {core_count} 個獨立的 <div> 區塊，一檔都不能少！
+                1. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！【第一部分】表格必須涵蓋【今日基礎全景數據】裡「每一列」標的，一檔都不能少。
+                2. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】，必須完全使用標準的 HTML 標籤渲染。
+                3. 🔴 絕對反偷懶機制：本次【核心股深度量化籌碼】中共有 {core_count} 檔核心股（{core_portfolio_str}）。你在第四部分【必須】產出 {core_count} 個獨立的 <div> 區塊，一檔都不能少！
+                4. 🎨 表格視覺化與排版指示（非常重要）：
+                   - 【操作建議】請依多空屬性上色：如紅色字體代表「便宜加碼」、綠色字體代表「達標停利」或「偏高留意」、黑色代表「合理續抱」。
+                   - 【市場預估與資料狀況】請將換行符號轉為 HTML 的 <ul style='text-align: left; margin: 0; padding-left: 20px; font-size: 12px;'><li>...</li></ul> 條列式白話文。若出現「⚠️」等警告字眼，請用紅色標註該行；出現「✅」可用藍色或綠色標註。
+                   - 【法人目標價】若為 N/A，請顯示灰色的 "無機構預估"。
 
                 二、 重點類股分類（僅供第三部分新聞剖析參考）：
                 1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
@@ -542,15 +567,16 @@ class TaiwanMarketTracker:
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px;'>【第一部分：量化估價與潛在上漲空間矩陣】</h4>
                   <table style='width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; text-align: center;' border='1'>
                     <tr style='background-color: #e9ecef;'>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>股票代號與名稱</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>最新市價</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>便宜價(保守)</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>公允價值(基準)</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>昂貴價(樂觀)</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>當前狀態</th>
-                      <th style='padding: 8px; border: 1px solid #ccc;'>市場隱含成長/ROE</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 10%;'>股票代號與名稱</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>最新市價</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>法人目標價</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>便宜價(悲觀)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>公允價值(基準)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>昂貴價(樂觀)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 12%;'>操作建議</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 38%;'>市場預估與資料狀況</th>
                     </tr>
-                    <!-- 嚴格讀取【今日基礎全景數據】填入 -->
+                    <!-- 嚴格讀取【今日基礎全景數據】填入並套用顏色與條列式 HTML -->
                   </table>
 
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第二部分：估價模型與計算方法說明】</h4>
@@ -595,15 +621,7 @@ class TaiwanMarketTracker:
                 {core_data_text}
                 """
                 
-                # 🚀 升級點 3：修復導致系統崩潰的無效模型名稱，替換為官方正式端點
-                target_models = [
-                                    "gemini-3.8-flash",
-                                    "gemini-3.7-flash",
-                                    "gemini-3.6-flash",
-                                    "gemini-3.5-flash",
-                                    "gemini-3.5-flash-lite",
-                                ]
-                #target_models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+                target_models = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite']
                 response = None
                 
                 for model_name in target_models:
@@ -611,7 +629,6 @@ class TaiwanMarketTracker:
                         print(f"嘗試使用模型: {model_name}...")
                         for attempt in range(3):
                             try:
-                                # 🚀 升級點 4：新的 Generate Content 呼叫語法
                                 response = client.models.generate_content(
                                     model=model_name,
                                     contents=prompt,
@@ -620,7 +637,6 @@ class TaiwanMarketTracker:
                                 print(f"✅ API 請求成功 ({model_name})！")
                                 break
                             except Exception as err:
-                                # 🚀 升級點 5：不再靜音吞噬錯誤，印出真實阻擋原因
                                 print(f"  [Attempt {attempt+1}] 呼叫錯誤: {err}")
                                 if ("429" in str(err) or "504" in str(err) or "quota" in str(err).lower()) and attempt < 2: 
                                     time.sleep(15 * (attempt + 1))
