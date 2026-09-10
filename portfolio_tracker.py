@@ -130,7 +130,6 @@ class TaiwanMarketTracker:
             cp = item.get("cost_per_share")
             s = item["shares"]
 
-            # 🛠️ 核心修正：市價無效時絕對不以成本代入
             market_price = self.twse_prices.get(c) if m == "TWSE" else self.tpex_prices.get(c)
             price = market_price if (market_price is not None and market_price > 0) else None
 
@@ -166,9 +165,9 @@ class TaiwanMarketTracker:
                             peg_w = extra.get("peg_weight", 100)
                             if dcf_w > 0: method_ch = f"混合估值(PEG {peg_w}%/DCF {dcf_w}%)"
                             elif fcfe_w > 0: method_ch = f"混合估值(PEG {peg_w}%/每股FCFE {fcfe_w}%)"
-                            else: method_ch = "混合估值(純PEG，資料不足降級)"
+                            else: method_ch = "混合估值(純PEG)"
                             if extra.get("sanity_clamped"):
-                                method_ch += " ⚠️已強制修正"
+                                method_ch += " ⚠️強制修正"
                                 sanity_clamped = True
                 elif v_method == "pb":
                     res = self.valuation_engine.calc_pb_valuation(c, price, current_pb)
@@ -222,7 +221,6 @@ class TaiwanMarketTracker:
                 if sanity_clamped: current_status += "（估值已校正）"
                 if is_interim: current_status += " ⚠️(待新淨值)"
 
-            # 🛠️ 核心修正：安全累加成本與市值，排除 None 成本引發的 TypeError
             if price:
                 total_mkt += (s * price)
             if cp is not None and cp > 0:
@@ -495,15 +493,24 @@ class TaiwanMarketTracker:
         if GEMINI_API_KEY:
             print("🤖 正在呼叫 Gemini API 進行決策矩陣運算...")
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=GEMINI_API_KEY)
+                # 🚀 升級點 1：全面導入最新 google.genai 官方架構
+                from google import genai
+                from google.genai import types
                 
+                client = genai.Client(api_key=GEMINI_API_KEY)
+                
+                # 🚀 升級點 2：使用最新強型別 SafetySettings
                 safety_settings = [
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE)
                 ]
+                
+                config = types.GenerateContentConfig(
+                    safety_settings=safety_settings,
+                    temperature=0.3
+                )
                 
                 core_portfolio_names = [f"{item['name']}({item['code']})" for item in PORTFOLIO if item.get("is_core", False)]
                 core_portfolio_str = "、".join(core_portfolio_names)
@@ -588,22 +595,43 @@ class TaiwanMarketTracker:
                 {core_data_text}
                 """
                 
-                target_models = ['gemini-2.5-flash', 'gemini-1.5-flash']
+                # 🚀 升級點 3：修復導致系統崩潰的無效模型名稱，替換為官方正式端點
+                target_models = [
+                                    "gemini-3.8-flash",
+                                    "gemini-3.7-flash",
+                                    "gemini-3.6-flash",
+                                    "gemini-3.5-flash",
+                                    "gemini-3.5-flash-lite",
+                                ]
+                #target_models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
                 response = None
+                
                 for model_name in target_models:
                     try:
-                        model = genai.GenerativeModel(model_name)
+                        print(f"嘗試使用模型: {model_name}...")
                         for attempt in range(3):
                             try:
-                                response = model.generate_content(prompt, safety_settings=safety_settings, request_options={"timeout": 150})
+                                # 🚀 升級點 4：新的 Generate Content 呼叫語法
+                                response = client.models.generate_content(
+                                    model=model_name,
+                                    contents=prompt,
+                                    config=config
+                                )
+                                print(f"✅ API 請求成功 ({model_name})！")
                                 break
                             except Exception as err:
-                                if ("429" in str(err) or "504" in str(err)) and attempt < 2: time.sleep(25 * (attempt + 1))
-                                else: raise err
+                                # 🚀 升級點 5：不再靜音吞噬錯誤，印出真實阻擋原因
+                                print(f"  [Attempt {attempt+1}] 呼叫錯誤: {err}")
+                                if ("429" in str(err) or "504" in str(err) or "quota" in str(err).lower()) and attempt < 2: 
+                                    time.sleep(15 * (attempt + 1))
+                                else: 
+                                    raise err
                         if response: break
-                    except: continue
+                    except Exception as loop_err: 
+                        print(f"❌ 模型 {model_name} 完全失敗: {loop_err}")
+                        continue
 
-                if not response: raise Exception("所有可用模型皆無法產生內容。")
+                if not response: raise Exception("所有可用模型皆無法產生內容。請檢查 API Key 權限或配額。")
                 
                 final_html = response.text.strip()
                 match = re.search(r"(<div.*?</div>)", final_html, re.DOTALL | re.IGNORECASE)
@@ -612,7 +640,6 @@ class TaiwanMarketTracker:
                     final_html = re.sub(r"^```(?:html)?\n?", "", final_html, flags=re.IGNORECASE)
                     final_html = re.sub(r"\n?```$", "", final_html).strip()
 
-                # 完整性驗證與補寫防護
                 try:
                     def _has_real_analysis_block(html, name):
                         pattern = re.escape(name) + r".{0,10}(籌碼與估值矩陣分析|決策矩陣分析)"
@@ -658,8 +685,12 @@ class TaiwanMarketTracker:
                             """
                             for model_name in target_models:
                                 try:
-                                    fixup_model = genai.GenerativeModel(model_name)
-                                    fixup_resp = fixup_model.generate_content(fixup_prompt, safety_settings=safety_settings, request_options={"timeout": 90})
+                                    print(f"嘗試補寫模型: {model_name}...")
+                                    fixup_resp = client.models.generate_content(
+                                        model=model_name,
+                                        contents=fixup_prompt,
+                                        config=config
+                                    )
                                     fixup_html = fixup_resp.text.strip()
                                     fixup_match = re.search(r"(<div.*</div>)", fixup_html, re.DOTALL | re.IGNORECASE)
                                     if fixup_match: fixup_html = fixup_match.group(1)
@@ -668,7 +699,9 @@ class TaiwanMarketTracker:
                                         final_html = final_html[:last_div_idx] + fixup_html + final_html[last_div_idx:]
                                         print(f"✅ 補寫成功：{[m['name'] for m in missing]}")
                                     break
-                                except Exception: continue
+                                except Exception as fix_err: 
+                                    print(f"  [補寫錯誤] 模型 {model_name}: {fix_err}")
+                                    continue
                 except Exception as e:
                     print(f"完整性檢查例外，略過不影響主報告: {e}")
 

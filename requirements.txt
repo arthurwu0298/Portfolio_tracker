@@ -1,6 +1,7 @@
+# requirements.txt 修正
 requests
 pandas
 numpy
 yfinance
-google-generativeai
+google-genai
 pandas-ta
