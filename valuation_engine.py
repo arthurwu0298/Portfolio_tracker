@@ -423,7 +423,7 @@ class FinMindValuationEngine:
         eq_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('Equity|權益', case=False, na=False)])
         debt_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('Debt|借款|公司債', case=False, na=False)], subset_cols=('date', 'type'))
         cash_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('CashAndCashEquivalents|現金及約當現金', case=False, na=False)])
-        shares_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('OrdinaryShares|普通股股本', case=False, na=False)])
+        shares_data = self._dedupe_by_date_maxvalue(bs_df[bs_df["type"].str.contains('OrdinaryShares|CommonStock|CapitalStock|普通股股本|股本', case=False, na=False)])
 
         try:
             op_ttm = op_data.sort_values('date').tail(4)['value'].sum()
@@ -445,9 +445,14 @@ class FinMindValuationEngine:
             #    否則股權價值除以幾百股會爆出天文數字的「每股價值」，
             #    且會讓 calc_blended_valuation 的 shares<=0 保護機制永遠不會被觸發。
             if shares_data.empty:
+                # 🔍 暫時診斷 log：這是市場隱含成長率長期 N/A 最可疑的一段——
+                # 把資產負債表裡實際出現的 type 字串印出來，才能一次確認正確的股本科目關鍵字。
+                sample_types = sorted(bs_df["type"].dropna().unique().tolist())
+                print(f"  [診斷] {stock_id} 股本科目查無比對結果，bs_df 實際 type 範例（前20個）：{sample_types[:20]}")
                 return 0, 0, 0, 0, 0
             share_capital = shares_data.sort_values('date').iloc[-1]['value']
             if share_capital <= 0:
+                print(f"  [診斷] {stock_id} 股本科目抓到但數值 <= 0：{share_capital}")
                 return 0, 0, 0, 0, 0
             diluted_shares = share_capital / 10 
             
