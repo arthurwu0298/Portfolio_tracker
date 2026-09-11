@@ -10,28 +10,34 @@ FHC_ARCHETYPES = {
         "default_ke_range": [0.068, 0.075],
         "default_g_range": [0.015, 0.020],
         "default_book_value_policy": "reported",
-        "confidence_ceiling": "A"
+        "confidence_ceiling": "A",
+        "default_observation_quarters": 0
     },
     "INSURANCE_DOMINANT": {
         "description": "壽險型金控：資產負債具高利率與市場敏感性，需考慮 OCI 與資產重分類權重",
         "default_ke_range": [0.078, 0.088],
         "default_g_range": [0.018, 0.025],
         "default_book_value_policy": "blended",
-        "confidence_ceiling": "A"
+        "confidence_ceiling": "A",
+        "default_observation_quarters": 0
     },
     "TRANSITION_MA": {
         "description": "併購整合/過渡期金控：處於換股增資、股本膨脹或業務整併期，資料存在期別錯配",
         "default_ke_range": [0.075, 0.085],
         "default_g_range": [0.018, 0.025],
         "default_book_value_policy": "reported",
-        "confidence_ceiling": "B"  # 整合完成前限制最高評級
+        "confidence_ceiling": "B",  # 整合完成前限制最高評級
+        # 新淨值確認納入後，仍需觀察N季（91天/季）才升級到原型上限評級，
+        # 避免「資料剛到位」被誤判成「整合風險已解除」
+        "default_observation_quarters": 2
     },
     "MIXED_FHC": {
         "description": "綜合型金控：銀行、證券、創投多引擎，獲利與資本市場高度連動",
         "default_ke_range": [0.073, 0.082],
         "default_g_range": [0.018, 0.023],
         "default_book_value_policy": "reported",
-        "confidence_ceiling": "A"
+        "confidence_ceiling": "A",
+        "default_observation_quarters": 0
     }
 }
 
@@ -117,12 +123,17 @@ PORTFOLIO = [
                 "g_reinvestment_efficiency": 0.33
             },
             "profitability": {
+                # 2025 年報實際 ROE 12.51%（法說會揭露）。原假設 14.0% 偏樂觀，
+                # 下修中樞並將區間下緣貼齊實際值；2026H1 獲利明顯回升，若動能延續可再上修。
                 "normalized_roe": 0.140,
-                "roe_range": [0.125, 0.150]
+                "roe_range": [0.120, 0.145]
             },
             "book_value": {
                 "policy": "blended",
                 "adjusted_weight": 0.30,
+                # 此係數為富邦金專屬校準值（參考其歷史財報口徑比值 109.3 / 83.7 估算），
+                # 不會被其他 INSURANCE_DOMINANT 原型股票沿用；新增壽險型持股須各自校準。
+                "adjustment_ratio": 1.306,
                 "status": "confirmed"
             }
         }
@@ -141,6 +152,9 @@ PORTFOLIO = [
     {"code": "2451", "name": "創見", "market": "TWSE", "shares": 1200, "cost_per_share": 150.0, "is_core": False, "valuation_method": "pb"},
 
     # 🏦 台中銀 (2812) - BANK_DOMINANT
+    # FYI: 2025/6/19 董事會決議現金增資1億股，屬股本膨脹事件，
+    # 但 ROE 走勢穩定（2024: 10.46% → 2025 年化約 10.49%），未觀察到明顯稀釋衝擊，
+    # 暫不需比照玉山金/永豐金改列 TRANSITION_MA；後續增資若影響獲利可再重新評估。
     {
         "code": "2812", "name": "台中銀", "market": "TWSE", "shares": 40000, "cost_per_share": 16.0,
         "valuation": {
@@ -186,8 +200,10 @@ PORTFOLIO = [
                 "g_reinvestment_efficiency": 0.37
             },
             "profitability": {
-                "normalized_roe": 0.135,
-                "roe_range": [0.125, 0.145]
+                # 2026/1/8 自結公告年化 ROE 11.5%（EPS 1.97元）。原假設 13.5% 偏樂觀，
+                # 下修中樞至實際值附近；京城銀行併入綜效若逐步顯現可再評估上修。
+                "normalized_roe": 0.115,
+                "roe_range": [0.105, 0.128]
             },
             "book_value": {
                 "policy": "reported",

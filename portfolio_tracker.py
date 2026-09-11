@@ -154,6 +154,7 @@ class TaiwanMarketTracker:
             eval_lines = [] # 🚀 儲存白話文條列資料
             sanity_clamped = False
             is_interim = False
+            is_observing = False
 
             if not price:
                 current_status = "⚠️ 行情資料不足"
@@ -195,11 +196,19 @@ class TaiwanMarketTracker:
                         if rim_extra:
                             conf = rim_extra.get("confidence", "B")
                             is_interim = rim_extra.get("is_interim", False)
+                            is_observing = rim_extra.get("is_observing", False)
+                            obs_days_left = rim_extra.get("observation_days_remaining", 0)
                             implied_roe_str = rim_extra.get("implied_roe", "N/A")
                             
                             # 🚀 白話文轉換
-                            if is_interim: eval_lines.append("⚠️ 處於併購過渡期，需等新財報發布")
-                            else: eval_lines.append(f"✅ 模型與財報可信度：{conf} 級")
+                            if is_interim:
+                                eval_lines.append("⚠️ 處於併購過渡期，需等新財報發布")
+                            elif is_observing:
+                                eval_lines.append(f"🕐 新淨值已到位，觀察期中（約剩 {obs_days_left} 天升級）")
+                            else:
+                                eval_lines.append(f"✅ 模型與財報可信度：{conf} 級")
+                            if rim_extra.get("blended_fallback"):
+                                eval_lines.append("⚠️ 尚未校準本股專屬淨值調整係數，暫以報表淨值計算")
                             eval_lines.append(f"🔍 現價反映預期：隱含 ROE 達 {implied_roe_str}")
                 elif v_method == "yield":
                     payout_ratio = item.get("payout_ratio", 0.5) 
@@ -241,6 +250,7 @@ class TaiwanMarketTracker:
 
                 if sanity_clamped: current_status += "（估值已校正）"
                 if is_interim: current_status += " ⚠️(待新淨值)"
+                elif is_observing: current_status += " 🕐(觀察期)"
 
             if price:
                 total_mkt += (s * price)
@@ -252,8 +262,8 @@ class TaiwanMarketTracker:
 
             records.append({
                 "代碼": c, "名稱": item["name"], "現價": price if price else "查無報價", 
-                "法人目標價": consensus_tp,
                 "便宜價(悲觀)": cheap_price, "公允價(基準)": fair_price, "昂貴價(樂觀)": target_price,
+                "法人目標價": consensus_tp,
                 "操作建議": current_status, 
                 "指定估價法": method_ch, 
                 "市場預估與資料狀況": market_eval_text
@@ -569,10 +579,10 @@ class TaiwanMarketTracker:
                     <tr style='background-color: #e9ecef;'>
                       <th style='padding: 8px; border: 1px solid #ccc; width: 10%;'>股票代號與名稱</th>
                       <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>最新市價</th>
-                      <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>法人目標價</th>
                       <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>便宜價(悲觀)</th>
                       <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>公允價值(基準)</th>
                       <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>昂貴價(樂觀)</th>
+                      <th style='padding: 8px; border: 1px solid #ccc; width: 8%;'>法人目標價</th>
                       <th style='padding: 8px; border: 1px solid #ccc; width: 12%;'>操作建議</th>
                       <th style='padding: 8px; border: 1px solid #ccc; width: 38%;'>市場預估與資料狀況</th>
                     </tr>

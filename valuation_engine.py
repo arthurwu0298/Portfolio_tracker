@@ -34,6 +34,7 @@ class FinMindValuationEngine:
         self.db_file = db_file
         self.cache_max_age_days = cache_max_age_days
         self._init_cache_table()
+        self._init_confirmation_table()
 
     def _init_cache_table(self):
         conn = sqlite3.connect(self.db_file)
@@ -41,6 +42,37 @@ class FinMindValuationEngine:
         cursor.execute('''CREATE TABLE IF NOT EXISTS finmind_cache (stock_id TEXT, dataset TEXT, fetched_at TEXT, data_json TEXT, PRIMARY KEY (stock_id, dataset))''')
         conn.commit()
         conn.close()
+
+    # ==========================================
+    # 🚀 併購/資料狀態「觀察期」追蹤表
+    # 記錄某檔股票第一次被判定為「新淨值已確認」的日期，
+    # 讓 confidence 在資料到位後仍維持一段緩衝期，而非立刻升級。
+    # ==========================================
+    def _init_confirmation_table(self):
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS confirmation_tracking (stock_id TEXT PRIMARY KEY, confirmed_since TEXT)''')
+        conn.commit()
+        conn.close()
+
+    def _get_confirmed_since(self, stock_id):
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute("SELECT confirmed_since FROM confirmation_tracking WHERE stock_id = ?", (str(stock_id),))
+            row = cursor.fetchone()
+            conn.close()
+            return row[0] if row else None
+        except: return None
+
+    def _set_confirmed_since(self, stock_id, date_str):
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute('''INSERT OR IGNORE INTO confirmation_tracking (stock_id, confirmed_since) VALUES (?, ?)''', (str(stock_id), date_str))
+            conn.commit()
+            conn.close()
+        except: pass
 
     def _read_cache(self, dataset, data_id):
         try:
@@ -362,34 +394,66 @@ class FinMindValuationEngine:
 
         bv_cfg = val_cfg.get("book_value", {})
 
-        # 1. 抓取最新淨值與資料日期
-        latest_bps_date = None
+        # 1. 抓取最新市價對應的 P/B 與報表淨值
         df_per = self._fetch_data("TaiwanStockPER", stock_id, years_back=1)
         if not df_per.empty and "PBR" in df_per.columns:
             valid_rows = df_per[df_per["PBR"] > 0].sort_values("date")
             if not valid_rows.empty:
                 current_pb = valid_rows.iloc[-1]["PBR"]
-                latest_bps_date = str(valid_rows.iloc[-1].get("date", ""))[:10]
 
         if current_pb <= 0: return 0, 0, 0, None
         reported_bps = current_price / current_pb
 
-        # 2. 動態檢驗事件生效日與資料狀態
+        # 1b. 淨值「所屬財報期別」＝資產負債表最新一期權益資料的期末日。
+        # 注意：不能用 TaiwanStockPER 的 date 欄位判斷，那是「每日市場日期」，
+        # 只要股票持續交易就會每天往前推進，即使公司根本還沒申報新財報，
+        # 隔天就會被誤判為「資料已更新」，讓過渡期保護形同虛設。
+        latest_bps_date = None
+        bs_df_check = self._fetch_data("TaiwanStockBalanceSheet", stock_id, years_back=2)
+        if not bs_df_check.empty:
+            eq_rows_check = bs_df_check[bs_df_check["type"].str.contains('Equity|權益', case=False, na=False)]
+            if not eq_rows_check.empty:
+                latest_bps_date = str(eq_rows_check.sort_values("date").iloc[-1]["date"])[:10]
+
+        # 2. 動態檢驗事件生效日與資料狀態（含觀察期緩衝）
         is_interim = False
+        is_observing = False
+        observation_days_remaining = 0
         eff_date = bv_cfg.get("effective_date")
         if bv_cfg.get("require_post_event") and eff_date:
             if not latest_bps_date or latest_bps_date < eff_date:
                 is_interim = True
             else:
                 bv_cfg["status"] = "confirmed"
+                # 新財報已納入合併後數字，但整合綜效／一次性費用未必立刻穩定，
+                # 給一段觀察期緩衝；期滿前 confidence 仍維持在過渡期等級（C）
+                obs_quarters = bv_cfg.get("observation_quarters", arch_defaults.get("default_observation_quarters", 0))
+                if obs_quarters > 0:
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    confirmed_since = self._get_confirmed_since(stock_id)
+                    if not confirmed_since:
+                        confirmed_since = today_str
+                        self._set_confirmed_since(stock_id, today_str)
+                    days_elapsed = (datetime.now() - datetime.strptime(confirmed_since, "%Y-%m-%d")).days
+                    obs_days = obs_quarters * 91
+                    if days_elapsed < obs_days:
+                        is_observing = True
+                        observation_days_remaining = obs_days - days_elapsed
 
         # 淨值口徑處理（支援 Blended BPS）
         policy = bv_cfg.get("policy", default_policy)
+        blended_fallback = False
         if policy == "blended":
             adjusted_weight = bv_cfg.get("adjusted_weight", 0.3)
-            # 參考富邦金歷史財報口徑比值估算 (109.3 / 83.7)
-            adjusted_bps = reported_bps * 1.306
-            valuation_bps = (reported_bps * (1 - adjusted_weight)) + (adjusted_bps * adjusted_weight)
+            adjustment_ratio = bv_cfg.get("adjustment_ratio")
+            if adjustment_ratio:
+                adjusted_bps = reported_bps * adjustment_ratio
+                valuation_bps = (reported_bps * (1 - adjusted_weight)) + (adjusted_bps * adjusted_weight)
+            else:
+                # 這檔股票尚未在 portfolio_config.py 個別校準過 adjustment_ratio，
+                # 為避免誤用其他公司（如富邦金）的口徑比值，安全退回報表淨值
+                valuation_bps = reported_bps
+                blended_fallback = True
         else:
             valuation_bps = reported_bps
 
@@ -442,7 +506,7 @@ class FinMindValuationEngine:
         implied_roe_pct = round(implied_roe * 100, 1)
 
         # 決策最終可信度 (Confidence Rating)
-        final_confidence = "C" if is_interim else confidence_ceiling
+        final_confidence = "C" if (is_interim or is_observing) else confidence_ceiling
 
         return final_cheap, final_fair, final_target, {
             "valuation_bps": round(valuation_bps, 2),
@@ -450,6 +514,9 @@ class FinMindValuationEngine:
             "implied_roe": f"{implied_roe_pct}% (基準差:{round((implied_roe - roe_fair)*100, 1):+}%)",
             "confidence": final_confidence,
             "is_interim": is_interim,
+            "is_observing": is_observing,
+            "observation_days_remaining": observation_days_remaining,
+            "blended_fallback": blended_fallback,
             "bps_date_used": latest_bps_date or "現行"
         }
 
