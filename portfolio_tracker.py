@@ -33,6 +33,18 @@ METHOD_MAP = {
     "manual": "手動設定"
 }
 
+# ==============================================================================
+# 🧪 第三部分「估價模型與財務物理學邏輯驗證」涵蓋的標的分組
+# 各組對應各自的物理天花板公式（P/B 上限、Forward P/E 上限、現金殖利率安全邊際等）
+# ==============================================================================
+PHYSICS_CHECK_GROUPS = {
+    "MEMORY": ["2344", "2408"],          # 記憶體：P/B 物理天花板
+    "AI_HW": ["6669"],                    # AI 硬體代工：FCF 折價下的 Forward P/E 天花板
+    "FINANCIAL": ["2881", "2886", "2884", "2890"],  # 金融股：BIS 資本適足率下的 Gordon 模型 P/B 天花板
+    "CONSTRUCTION": ["2597"]              # 高科技廠房營造：毛利率＋現金殖利率安全邊際
+}
+PHYSICS_CHECK_CODES = set(sum(PHYSICS_CHECK_GROUPS.values(), []))
+
 def safe_float(val):
     try: return float(str(val).replace(",", ""))
     except Exception: return 0.0
@@ -131,6 +143,7 @@ class TaiwanMarketTracker:
     def calculate_basic_portfolio(self):
         self.fetch_market_data()
         records = []
+        physics_data = {}  # 🧪 第三部分「財務物理學檢核」用的精簡快照
         total_mkt, total_cost = 0.0, 0.0
 
         for item in PORTFOLIO:
@@ -155,6 +168,7 @@ class TaiwanMarketTracker:
             sanity_clamped = False
             is_interim = False
             is_observing = False
+            fwd_eps_capture = None  # 🧪 供物理天花板檢核使用（僅PEG/混合估值分支會賦值）
 
             if not price:
                 current_status = "⚠️ 行情資料不足"
@@ -170,6 +184,7 @@ class TaiwanMarketTracker:
                         if extra:
                             implied_g = extra.get("implied_g", "N/A")
                             eval_lines.extend(["📊 採成長股動態推估", f"🔍 現價隱含預期：維持 {implied_g}% 成長率"])
+                            fwd_eps_capture = extra.get("fwd_eps")
                             
                             dcf_w = extra.get("dcf_weight", 0)
                             fcfe_w = extra.get("fcfe_weight", 0)
@@ -257,6 +272,17 @@ class TaiwanMarketTracker:
             if cp is not None and cp > 0:
                 total_cost += (s * cp)
 
+            # 🧪 第三部分「財務物理學檢核」快照：只收錄涵蓋名單內的標的，
+            # 全部取自本迴圈已經算好的真實數據，不額外杜撰
+            if c in PHYSICS_CHECK_CODES and price:
+                physics_data[c] = {
+                    "name": item["name"], "price": price,
+                    "pb": current_pb if current_pb else None,
+                    "yield": metrics.get("yield", 0.0),
+                    "fwd_eps": fwd_eps_capture,
+                    "cheap": cheap_price, "fair": fair_price, "target": target_price
+                }
+
             # 🚀 將條列資料組裝為字串供 DataFrame 顯示，Prompt 稍後會叫 AI 轉成 HTML 列表
             market_eval_text = "\n".join(eval_lines) if eval_lines else "無特殊數據"
 
@@ -271,6 +297,7 @@ class TaiwanMarketTracker:
 
         ret_rate = round(((total_mkt - total_cost) / total_cost) * 100, 2) if total_cost > 0 else 0.0
         self.save_to_db(total_cost, total_mkt, total_mkt + CASH_RESERVE, CASH_RESERVE, total_mkt - total_cost, ret_rate)
+        self.physics_data = physics_data  # 🧪 供第三部分財務物理學檢核使用
         return pd.DataFrame(records)
 
     def fetch_advanced_quant_data(self):
@@ -525,6 +552,28 @@ class TaiwanMarketTracker:
         else:
             core_data_text = "今日無指定核心持股進行深度推演。"
 
+        # 🧪 第三部分「估價模型與財務物理學邏輯驗證」用資料
+        # 全部取自 calculate_basic_portfolio() 已經算好的真實數據，AI 不得自行捏造任何數字
+        physics_group_label = {
+            "2344": "記憶體", "2408": "記憶體",
+            "6669": "AI硬體代工",
+            "2881": "金融股", "2886": "金融股", "2884": "金融股", "2890": "金融股",
+            "2597": "高科技廠房營造"
+        }
+        physics_snapshot = getattr(self, "physics_data", {})
+        physics_data_text = ""
+        for code in sum(PHYSICS_CHECK_GROUPS.values(), []):
+            d = physics_snapshot.get(code)
+            if not d: continue
+            physics_data_text += f"\n--- 【{d['name']} ({code}) ／分組: {physics_group_label.get(code, '')}】 ---\n"
+            physics_data_text += f"現價: {d['price']}\n"
+            if d.get("pb"): physics_data_text += f"現價對應市場P/B: {d['pb']}\n"
+            if d.get("yield"): physics_data_text += f"現金殖利率(%): {d['yield']}\n"
+            if d.get("fwd_eps"): physics_data_text += f"模型預估EPS: {d['fwd_eps']}\n"
+            physics_data_text += f"系統估算便宜價/公允價/昂貴價: {d['cheap']} / {d['fair']} / {d['target']}\n"
+        if not physics_data_text:
+            physics_data_text = "今日無可用之財務物理學檢核數據，此部分請輸出「今日資料不足，暫無法進行物理天花板驗證」。"
+
         if GEMINI_API_KEY:
             print("🤖 正在呼叫 Gemini API 進行決策矩陣運算...")
             try:
@@ -559,19 +608,20 @@ class TaiwanMarketTracker:
                 一、 核心約束規則（違反任一項即判定回答失敗）：
                 1. 絕對信任 Python 數據：下方的【今日基礎全景數據】是經過嚴格演算法計算的鐵證。你必須 100% 照抄這些價格、估值與狀態填入表格，嚴禁自行推算或竄改！【第一部分】表格必須涵蓋【今日基礎全景數據】裡「每一列」標的，一檔都不能少。
                 2. HTML 語法嚴格限制：全篇報告【嚴禁使用 Markdown 語法】，必須完全使用標準的 HTML 標籤渲染。
-                3. 🔴 絕對反偷懶機制：本次【核心股深度量化籌碼】中共有 {core_count} 檔核心股（{core_portfolio_str}）。你在第四部分【必須】產出 {core_count} 個獨立的 <div> 區塊，一檔都不能少！
+                3. 🔴 絕對反偷懶機制：本次【核心股深度量化籌碼】中共有 {core_count} 檔核心股（{core_portfolio_str}）。你在第五部分【必須】產出 {core_count} 個獨立的 <div> 區塊，一檔都不能少！
                 4. 🎨 表格視覺化與排版指示（非常重要）：
                    - 【操作建議】請依多空屬性上色：如紅色字體代表「便宜加碼」、綠色字體代表「達標停利」或「偏高留意」、黑色代表「合理續抱」。
                    - 【市場預估與資料狀況】請將換行符號轉為 HTML 的 <ul style='text-align: left; margin: 0; padding-left: 20px; font-size: 12px;'><li>...</li></ul> 條列式白話文。若出現「⚠️」等警告字眼，請用紅色標註該行；出現「✅」可用藍色或綠色標註。
                    - 【法人目標價】若為 N/A，請顯示灰色的 "無機構預估"。
+                5. 🧪 第三部分數據依賴規則：下方的【估值物理天花板檢核數據】同樣是 Python 已經算好的真實數字（現價、市場P/B、現金殖利率、模型預估EPS、估值區間）。第三部分只能引用這份數據與其中的物理公式常數做診斷，嚴禁自行捏造當日漲跌幅、財報數字或任何未提供的指標；若某檔缺少對應數據，就只講「目前不評論該項」，不要編造。
 
-                二、 重點類股分類（僅供第三部分新聞剖析參考）：
+                二、 重點類股分類（僅供第四部分新聞剖析參考）：
                 1. 記憶體族群：華邦電 (2344)、南亞科 (2408)、創見 (2451)
                 2. AI 高 CP 值/前景看好：緯穎 (6669)、奇鋐 (3017)、雙鴻 (3324)
                 3. 金融業權值與補漲：富邦金 (2881)、兆豐金 (2886)、玉山金 (2884)、永豐金 (2890)、台中銀 (2812)、臺企銀 (2834)
                 4. 高科技廠房營造龍頭：潤弘 (2597)
 
-                三、 請依序輸出以下四個部分，直接輸出完整 HTML 代碼：
+                三、 請依序輸出以下五個部分，直接輸出完整 HTML 代碼：
 
                 <div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; font-family: sans-serif; color: #333;'>
                   <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px;'>【第一部分：量化估價與潛在上漲空間矩陣】</h4>
@@ -597,12 +647,28 @@ class TaiwanMarketTracker:
                     <li><b>營造與一般傳產：</b>依在手訂單能見度、工程認列進度搭配歷史本益比區間估算。</li>
                   </ul>
 
-                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第三部分：最新即時焦點消息面剖析】</h4>
+                  <h4 style='color: #6a1b9a; border-bottom: 2px solid #6a1b9a; padding-bottom: 5px; margin-top: 25px;'>【第三部分：估價模型與財務物理學邏輯驗證】</h4>
+                  <p style='font-size: 12px; color: #666; margin: 0 0 8px 0;'>本部分僅使用下方【估值物理天花板檢核數據】提供的真實數字，交叉比對四組標的各自的產業物理邊界，判斷估值是逼近／貫穿天花板的過熱區，還是回測至安全邊際的便宜區。嚴禁引用此區塊未提供的數字（例如當日漲跌幅、毛利率、精確殖利率），缺數據就明講「暫無法比對」。</p>
+                  <ol style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
+                    <li><b>記憶體製造（華邦電 2344、南亞科 2408）：P/B 物理天花板</b><br>
+                        公式約束：Target P/B = (ROE − g) / (Ke − g)。物理邊界：大宗商品晶圓廠景氣高點的峰值 ROE 極限約 20%~24%，對應歷史物理極限 P/B 約 1.8x~2.2x。<br>
+                        請用兩者現價對應的市場P/B 比對此天花板，並用現價相對系統估算便宜價/公允價的位置，說明目前是逼近天花板的過熱區，還是貫穿至便宜價邊界、重新浮現安全邊際。</li>
+                    <li><b>AI 硬體代工（緯穎 6669）：FCF 與營運資金折價效應</b><br>
+                        算式檢驗：因高單價機櫃導致大量現金積壓在存貨與應收帳款，FCF 轉換率折價使合理本益比被剛性限制在 18x~20x（對應公允價 ≈ 模型預估EPS × 18~20x）。<br>
+                        請用現價 ÷ 模型預估EPS 換算目前 Forward P/E，對比 18x~20x 天花板區間，說明目前落在便宜～合理、還是已貼近或貫穿天花板。</li>
+                    <li><b>金融股（富邦金 2881、兆豐金 2886、玉山金 2884、永豐金 2890）：觸及 1.8x P/B 的「高檔滯脹」警戒</b><br>
+                        物理天花板約束：商業銀行在 BIS 資本適足率（&gt;10.5%）限制下，資產槓桿上限約 12~14 倍，極限 ROE 鎖在 12%~14%，代入 Gordon 模型換算出的 P/B 極限即為 1.8x。<br>
+                        請用四檔各自現價對應的市場P/B 逐一比對此 1.8x 天花板，標註誰已緊貼或觸及天花板（視為滯脹、已無安全邊際），誰還有距離。</li>
+                    <li><b>高科技廠房營造（潤弘 2597）：現金殖利率安全邊際</b><br>
+                        請用潤弘的現金殖利率與現價相對系統估算公允價的位置，說明其防禦性與安全邊際是否仍然存在；若殖利率數據缺失，只講「殖利率數據暫缺，僅以估值區間位置判斷」，不要編造具體數字。</li>
+                  </ol>
+
+                  <h4 style='color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px;'>【第四部分：最新即時焦點消息面剖析】</h4>
                   <ul style='font-size: 13px; line-height: 1.8; padding-left: 20px;'>
                       <!-- 根據提供的【原始官方公告與新聞】，客觀剖析新聞事件對目前股價位階的影響。不提供買賣操作建議。 -->
                   </ul>
                   
-                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第四部分：核心持股深度多空決策矩陣】</h4>
+                  <h4 style='color: #d32f2f; border-bottom: 2px solid #d32f2f; padding-bottom: 5px; margin-top: 30px;'>【第五部分：核心持股深度多空決策矩陣】</h4>
                   <!-- 本次共有 {core_count} 檔核心股：{core_portfolio_str}。針對每一檔重複以下 <div> 結構 -->
                   <div style='background-color: #ffffff; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>
                     <h5 style='color: #333; margin-top: 0;'>[股票名稱] 籌碼與估值矩陣分析</h5>
@@ -622,6 +688,9 @@ class TaiwanMarketTracker:
                 
                 【今日基礎全景數據】
                 {df_basic.to_string(index=False)}
+                
+                【估值物理天花板檢核數據】
+                {physics_data_text}
                 
                 【原始官方公告與新聞】
                 {official_text_for_ai}

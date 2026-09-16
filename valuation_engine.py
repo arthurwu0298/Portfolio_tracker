@@ -734,7 +734,8 @@ class FinMindValuationEngine:
 
                 return self._sanity_clamp(current_price, blended_cheap, blended_fair, blended_exp, {
                     "implied_g": implied_g_pct, "dcf_weight": round(dcf_weight * 100, 1),
-                    "peg_weight": round(peg_weight * 100, 1), "fcfe_weight": 0, "model": "FCFF"
+                    "peg_weight": round(peg_weight * 100, 1), "fcfe_weight": 0, "model": "FCFF",
+                    "fwd_eps": round(fwd_eps, 2)
                 })
 
         bvps = 0.0
@@ -758,9 +759,11 @@ class FinMindValuationEngine:
 
             return self._sanity_clamp(current_price, blended_cheap, blended_fair, blended_exp, {
                 "implied_g": implied_g_pct, "dcf_weight": 0, "peg_weight": round(peg_weight * 100, 1),
-                "fcfe_weight": round(fcfe_weight * 100, 1), "model": "FCFE/share"
+                "fcfe_weight": round(fcfe_weight * 100, 1), "model": "FCFE/share",
+                "fwd_eps": round(fwd_eps, 2)
             })
 
         return self._sanity_clamp(current_price, peg_cheap, peg_fair, peg_exp, {
-            "implied_g": implied_g_pct, "dcf_weight": 0, "peg_weight": 100, "fcfe_weight": 0, "model": "PEG"
+            "implied_g": implied_g_pct, "dcf_weight": 0, "peg_weight": 100, "fcfe_weight": 0, "model": "PEG",
+            "fwd_eps": round(fwd_eps, 2)
         })

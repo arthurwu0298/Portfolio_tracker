@@ -125,7 +125,7 @@ PORTFOLIO = [
             "profitability": {
                 # 2025 年報實際 ROE 12.51%（法說會揭露）。原假設 14.0% 偏樂觀，
                 # 下修中樞並將區間下緣貼齊實際值；2026H1 獲利明顯回升，若動能延續可再上修。
-                "normalized_roe": 0.140,
+                "normalized_roe": 0.130,
                 "roe_range": [0.120, 0.145]
             },
             "book_value": {
